@@ -6,6 +6,10 @@
 
 :root {
   color-scheme: dark;
+  --accent: #38bdf8;
+  --accent-2: #22d3ee;
+  --accent-on: #082f49;
+  --accent-shadow: rgba(56, 189, 248, 0.35);
 }
 
 .dark {
@@ -43,11 +47,32 @@ body {
 }
 
 .theme-light body {
-  color: #0f172a;
+  color: #1f2937;
   background-image:
-    radial-gradient(circle at 14% 8%, rgba(56, 189, 248, 0.14), transparent 42%),
-    radial-gradient(circle at 85% 14%, rgba(190, 242, 100, 0.18), transparent 34%),
-    linear-gradient(140deg, #f8fafc 0%, #eef2ff 42%, #ecfeff 100%);
+    radial-gradient(circle at 14% 8%, rgba(234, 179, 128, 0.26), transparent 42%),
+    radial-gradient(circle at 85% 14%, rgba(251, 191, 152, 0.22), transparent 34%),
+    linear-gradient(140deg, #f2e2d4 0%, #ead3bf 42%, #e6c9b2 100%);
+}
+
+.theme-ocean {
+  --accent: #38bdf8;
+  --accent-2: #22d3ee;
+  --accent-on: #082f49;
+  --accent-shadow: rgba(56, 189, 248, 0.35);
+}
+
+.theme-crimson {
+  --accent: #fb7185;
+  --accent-2: #f43f5e;
+  --accent-on: #fff1f2;
+  --accent-shadow: rgba(244, 63, 94, 0.3);
+}
+
+.theme-light {
+  --accent: #d0875c;
+  --accent-2: #c9734a;
+  --accent-on: #fff7ed;
+  --accent-shadow: rgba(201, 115, 74, 0.28);
 }
 
 .themed-item {
@@ -67,7 +92,7 @@ body {
 }
 
 .theme-light .themed-item {
-  background-image: linear-gradient(100deg, rgba(255, 255, 255, 0.9), rgba(240, 249, 255, 0.9), rgba(236, 253, 245, 0.85));
+  background-image: linear-gradient(100deg, rgba(255, 250, 243, 0.9), rgba(248, 235, 222, 0.88), rgba(243, 221, 202, 0.84));
   border-color: rgba(15, 23, 42, 0.14);
 }
 
@@ -84,7 +109,43 @@ body {
 
 .theme-light .bg-white\/10,
 .theme-light .bg-white\/5 {
-  background-color: rgba(255, 255, 255, 0.78) !important;
+  background-color: rgba(255, 248, 241, 0.72) !important;
+}
+
+.theme-light .text-slate-100 {
+  color: #1f2937 !important;
+}
+
+.theme-light .placeholder\:text-slate-300::placeholder {
+  color: #64748b !important;
+}
+
+.theme-light .bg-surface {
+  background-color: rgba(255, 247, 237, 0.58) !important;
+}
+
+.themed-accent {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  color: var(--accent-on);
+  box-shadow: 0 8px 20px var(--accent-shadow);
+}
+
+.themed-accent-solid {
+  background-color: var(--accent);
+  color: var(--accent-on);
+}
+
+.themed-accent-ring:focus,
+.themed-accent-ring:focus-visible {
+  border-color: var(--accent);
+}
+
+.themed-accent-border {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.themed-accent-text {
+  color: var(--accent);
 }
 
 * {

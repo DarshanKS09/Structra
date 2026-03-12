@@ -45,7 +45,7 @@ export function ModeSelector({ onSelect }: Props) {
             transition={{ duration: 0.28, delay: idx * 0.045 }}
             whileHover={{ y: -3, scale: 1.01 }}
             whileTap={{ scale: 0.99 }}
-            className="rounded-3xl border border-border bg-surface p-5 text-left shadow-glass backdrop-blur-xl transition-colors hover:border-sky-300/50 hover:bg-white/15 light:border-slate-300 light:bg-white/65 light:hover:bg-white"
+            className="rounded-3xl border border-border bg-surface p-5 text-left shadow-glass backdrop-blur-xl transition-colors hover:bg-white/15 themed-accent-border light:border-slate-300 light:bg-white/65 light:hover:bg-white"
           >
             <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-white/10 text-xl light:bg-slate-100">
               {modeIcons[mode]}

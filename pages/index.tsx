@@ -70,7 +70,7 @@ export default function HomePage() {
   const themeMeta: Record<ThemeVariant, { short: string; className: string }> = {
     ocean: { short: "OC", className: "bg-sky-500 text-slate-950" },
     crimson: { short: "CR", className: "bg-rose-500 text-white" },
-    light: { short: "LT", className: "bg-amber-100 text-slate-900 border border-slate-300" }
+    light: { short: "LT", className: "bg-[#d0875c] text-amber-50" }
   };
 
   const cycleTheme = () => {
@@ -139,7 +139,7 @@ export default function HomePage() {
                     onClick={() => setMode(mode)}
                     className={`h-10 rounded-xl px-3 text-sm ${
                       selectedMode === mode
-                        ? "bg-sky-500 font-semibold text-slate-950"
+                        ? "themed-accent-solid font-semibold"
                         : "border border-white/20 light:border-slate-300"
                     }`}
                   >
@@ -152,7 +152,7 @@ export default function HomePage() {
                 <div className="flex items-center justify-between">
                   <div className="relative w-44">
                     <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-300">
-                      ≡
+                      ===
                     </span>
                     <select
                       id="mobile-mode-select"
@@ -167,7 +167,7 @@ export default function HomePage() {
                       ))}
                     </select>
                     <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-300">
-                      ▼
+                      v
                     </span>
                   </div>
                   <button
@@ -247,3 +247,4 @@ function ModeView({
       return <MeetingList items={items} onToggle={onToggle} onDelete={onDelete} onEdit={onEdit} />;
   }
 }
+

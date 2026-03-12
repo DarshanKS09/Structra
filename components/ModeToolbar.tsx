@@ -30,7 +30,7 @@ export function ModeToolbar({
       </div>
       <div className="h-2 overflow-hidden rounded-full bg-white/10 light:bg-slate-200">
         <motion.div
-          className="h-full rounded-full bg-gradient-to-r from-sky-400 to-cyan-300"
+          className="themed-accent h-full rounded-full"
           initial={{ width: 0 }}
           animate={{ width: `${progress}%` }}
           transition={{ duration: 0.4 }}
@@ -50,7 +50,7 @@ export function ModeToolbar({
             onClick={() => onFilterChange(option)}
             className={`h-10 rounded-xl text-xs font-medium capitalize ${
               filter === option
-                ? "bg-sky-500 text-slate-950"
+                ? "themed-accent-solid"
                 : "border border-white/20 text-slate-200 light:border-slate-300 light:text-slate-700"
             }`}
           >

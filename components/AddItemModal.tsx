@@ -14,7 +14,7 @@ type Props = {
 type FormState = Record<string, string | number | boolean>;
 
 const inputBaseClass =
-  "w-full rounded-2xl border border-white/20 bg-white/10 px-3 py-3 text-sm text-slate-100 outline-none backdrop-blur-sm placeholder:text-slate-300/75 focus:border-sky-300/60 light:border-slate-300 light:bg-white light:text-slate-900 light:placeholder:text-slate-500";
+  "themed-accent-ring w-full rounded-2xl border border-white/20 bg-white/10 px-3 py-3 text-sm text-slate-100 outline-none backdrop-blur-sm placeholder:text-slate-300/75";
 
 const defaults: Record<ListMode, FormState> = {
   task: { title: "", description: "", priority: "Medium", dueDate: "", completed: false },
@@ -139,7 +139,7 @@ export function AddItemModal({ mode, isOpen, editingItem, onClose, onSubmit, onU
                 </button>
                 <button
                   type="submit"
-                  className="h-12 flex-1 rounded-2xl bg-sky-500 text-sm font-semibold text-slate-950"
+                  className="themed-accent-solid h-12 flex-1 rounded-2xl text-sm font-semibold"
                 >
                   {editingItem ? "Save Changes" : "Add Item"}
                 </button>
@@ -388,7 +388,7 @@ function OptionPills({
           onClick={() => onChange(option)}
           className={`h-10 rounded-xl text-xs font-medium ${
             value === option
-              ? "bg-sky-500 text-slate-950"
+              ? "themed-accent-solid"
               : "text-slate-200 light:text-slate-700"
           }`}
         >
