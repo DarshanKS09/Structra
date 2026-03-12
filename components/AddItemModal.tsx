@@ -161,6 +161,8 @@ function Fields({
   form: FormState;
   setValue: (key: string, value: string | number | boolean) => void;
 }) {
+  const selectClass = `${inputBaseClass} text-slate-100 light:text-slate-900`;
+
   switch (mode) {
     case "task":
       return (
@@ -181,13 +183,13 @@ function Fields({
           />
           <div className="grid grid-cols-2 gap-3">
             <select
-              className={inputBaseClass}
+              className={selectClass}
               value={String(form.priority || "Medium")}
               onChange={(e) => setValue("priority", e.target.value)}
             >
-              <option>Low</option>
-              <option>Medium</option>
-              <option>High</option>
+              <option value="Low">Low</option>
+              <option value="Medium">Medium</option>
+              <option value="High">High</option>
             </select>
             <input
               type="date"
@@ -218,14 +220,14 @@ function Fields({
               onChange={(e) => setValue("quantity", Number(e.target.value))}
             />
             <select
-              className={inputBaseClass}
+              className={selectClass}
               value={String(form.unit || "pieces")}
               onChange={(e) => setValue("unit", e.target.value)}
             >
-              <option>kg</option>
-              <option>g</option>
-              <option>pieces</option>
-              <option>liters</option>
+              <option value="kg">kg</option>
+              <option value="g">g</option>
+              <option value="pieces">pieces</option>
+              <option value="liters">liters</option>
             </select>
           </div>
         </>
@@ -242,12 +244,12 @@ function Fields({
           />
           <div className="grid grid-cols-2 gap-3">
             <select
-              className={inputBaseClass}
+              className={selectClass}
               value={String(form.frequency || "Daily")}
               onChange={(e) => setValue("frequency", e.target.value)}
             >
-              <option>Daily</option>
-              <option>Weekly</option>
+              <option value="Daily">Daily</option>
+              <option value="Weekly">Weekly</option>
             </select>
             <input
               type="number"
@@ -341,13 +343,13 @@ function Fields({
               onChange={(e) => setValue("price", Number(e.target.value))}
             />
             <select
-              className={inputBaseClass}
+              className={selectClass}
               value={String(form.priority || "Medium")}
               onChange={(e) => setValue("priority", e.target.value)}
             >
-              <option>Low</option>
-              <option>Medium</option>
-              <option>High</option>
+              <option value="Low">Low</option>
+              <option value="Medium">Medium</option>
+              <option value="High">High</option>
             </select>
           </div>
         </>

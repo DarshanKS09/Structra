@@ -2,7 +2,6 @@ import Head from "next/head";
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { AddItemModal } from "@/components/AddItemModal";
-import { BottomNav } from "@/components/BottomNav";
 import { FitnessList } from "@/components/FitnessList";
 import { FloatingAddButton } from "@/components/FloatingAddButton";
 import { GroceryList } from "@/components/GroceryList";
@@ -132,6 +131,24 @@ export default function HomePage() {
                 ))}
               </div>
 
+              <div className="md:hidden">
+                <label htmlFor="mobile-mode-select" className="mb-1 block text-xs text-slate-300 light:text-slate-600">
+                  Select mode
+                </label>
+                <select
+                  id="mobile-mode-select"
+                  value={selectedMode}
+                  onChange={(e) => setMode(e.target.value as ListMode)}
+                  className="h-11 w-full rounded-2xl border border-white/20 bg-white/10 px-3 text-sm outline-none light:border-slate-300 light:bg-white"
+                >
+                  {(Object.keys(modeLabels) as ListMode[]).map((mode) => (
+                    <option key={mode} value={mode} className="text-slate-900">
+                      {modeLabels[mode]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <ModeToolbar
                 mode={selectedMode}
                 searchQuery={searchQuery}
@@ -141,21 +158,14 @@ export default function HomePage() {
                 progress={getProgress(selectedMode)}
               />
 
+              <FloatingAddButton onClick={openAddModal} inline />
+
               <ModeView
                 mode={selectedMode}
                 items={items}
                 onToggle={(id) => toggleCompletion(selectedMode, id)}
                 onDelete={(id) => deleteItem(selectedMode, id)}
                 onEdit={startEditing}
-              />
-
-              <FloatingAddButton onClick={openAddModal} />
-              <BottomNav
-                currentMode={selectedMode}
-                onBack={() => setMode(null)}
-                onChangeMode={setMode}
-                isDarkMode={isDarkMode}
-                onToggleTheme={toggleDarkMode}
               />
 
               <AddItemModal
