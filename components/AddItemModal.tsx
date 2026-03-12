@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { type DraftByMode, type ListItem, type ListMode, modeLabels } from "@/types/taskTypes";
 
@@ -96,7 +96,7 @@ export function AddItemModal({ mode, isOpen, editingItem, onClose, onSubmit, onU
   const setValue = (key: string, value: string | number | boolean) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
-  const submit = (event: React.FormEvent<HTMLFormElement>) => {
+  const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const draft = toDraft(mode, form);
     if (editingItem) {
