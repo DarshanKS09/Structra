@@ -8,6 +8,7 @@ import {
 } from "@/types/taskTypes";
 
 type FilterType = "all" | "active" | "completed";
+export type ThemeVariant = "ocean" | "graphite" | "crimson";
 
 type TaskState = {
   selectedMode: ListMode | null;
@@ -16,7 +17,7 @@ type TaskState = {
   editingItemId: string | null;
   searchQuery: string;
   filter: FilterType;
-  isDarkMode: boolean;
+  theme: ThemeVariant;
   setMode: (mode: ListMode | null) => void;
   addItem: <M extends ListMode>(mode: M, data: DraftByMode[M]) => void;
   updateItem: <M extends ListMode>(
@@ -32,7 +33,7 @@ type TaskState = {
   stopEditing: () => void;
   setSearchQuery: (query: string) => void;
   setFilter: (filter: FilterType) => void;
-  toggleDarkMode: () => void;
+  setTheme: (theme: ThemeVariant) => void;
   getItemsForMode: (mode: ListMode) => ListItem[];
   getVisibleItems: (mode: ListMode) => ListItem[];
   getProgress: (mode: ListMode) => number;
@@ -81,7 +82,7 @@ export const useTaskStore = create<TaskState>()(
       editingItemId: null,
       searchQuery: "",
       filter: "all",
-      isDarkMode: true,
+      theme: "ocean",
       setMode: (mode) => set({ selectedMode: mode, searchQuery: "", filter: "all" }),
       addItem: (mode, data) =>
         set((state) => {
@@ -134,7 +135,7 @@ export const useTaskStore = create<TaskState>()(
       stopEditing: () => set({ editingItemId: null }),
       setSearchQuery: (query) => set({ searchQuery: query }),
       setFilter: (filter) => set({ filter }),
-      toggleDarkMode: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
+      setTheme: (theme) => set({ theme }),
       getItemsForMode: (mode) => get().itemsByMode[mode],
       getVisibleItems: (mode) => {
         const { filter, searchQuery } = get();
@@ -162,7 +163,7 @@ export const useTaskStore = create<TaskState>()(
       partialize: (state) => ({
         itemsByMode: state.itemsByMode,
         selectedMode: state.selectedMode,
-        isDarkMode: state.isDarkMode
+        theme: state.theme
       })
     }
   )

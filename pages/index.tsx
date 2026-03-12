@@ -12,7 +12,7 @@ import { ModeToolbar } from "@/components/ModeToolbar";
 import { ShoppingList } from "@/components/ShoppingList";
 import { StudyList } from "@/components/StudyList";
 import { TaskList } from "@/components/TaskList";
-import { useTaskStore } from "@/store/useTaskStore";
+import { type ThemeVariant, useTaskStore } from "@/store/useTaskStore";
 import { type DraftByMode, type ListItem, type ListMode, modeLabels } from "@/types/taskTypes";
 
 export default function HomePage() {
@@ -33,8 +33,8 @@ export default function HomePage() {
     setSearchQuery,
     filter,
     setFilter,
-    isDarkMode,
-    toggleDarkMode,
+    theme,
+    setTheme,
     getVisibleItems,
     getItemsForMode,
     getProgress
@@ -46,9 +46,11 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!mounted) return;
-    document.documentElement.classList.toggle("dark", isDarkMode);
-    document.documentElement.classList.toggle("light", !isDarkMode);
-  }, [isDarkMode, mounted]);
+    document.documentElement.classList.add("dark");
+    document.documentElement.classList.remove("light");
+    document.documentElement.classList.remove("theme-ocean", "theme-graphite", "theme-crimson");
+    document.documentElement.classList.add(`theme-${theme}`);
+  }, [theme, mounted]);
 
   const handleAddItem = <M extends ListMode>(mode: M, data: DraftByMode[M]) => {
     addItem(mode, data);
@@ -105,13 +107,21 @@ export default function HomePage() {
                 <div className="text-sm font-medium text-slate-300 light:text-slate-600">
                   {modeLabels[selectedMode]}
                 </div>
-                <button
-                  type="button"
-                  onClick={toggleDarkMode}
-                  className="rounded-xl border border-white/20 px-4 py-2 text-sm light:border-slate-300"
+                <select
+                  value={theme}
+                  onChange={(e) => setTheme(e.target.value as ThemeVariant)}
+                  className="h-10 rounded-xl border border-white/20 bg-white/10 px-3 text-sm outline-none"
                 >
-                  {isDarkMode ? "Light" : "Dark"} Mode
-                </button>
+                  <option value="ocean" className="text-slate-900">
+                    Ocean Dark
+                  </option>
+                  <option value="graphite" className="text-slate-900">
+                    Graphite Dark
+                  </option>
+                  <option value="crimson" className="text-slate-900">
+                    Crimson Dark
+                  </option>
+                </select>
               </header>
 
               <div className="hidden gap-2 overflow-x-auto pb-1 md:flex">
@@ -132,20 +142,35 @@ export default function HomePage() {
               </div>
 
               <div className="md:hidden">
-                <label htmlFor="mobile-mode-select" className="mb-1 block text-xs text-slate-300 light:text-slate-600">
+                <label htmlFor="mobile-mode-select" className="mb-1 block text-xs text-slate-300">
                   Select mode
                 </label>
                 <select
                   id="mobile-mode-select"
                   value={selectedMode}
                   onChange={(e) => setMode(e.target.value as ListMode)}
-                  className="h-11 w-full rounded-2xl border border-white/20 bg-white/10 px-3 text-sm outline-none light:border-slate-300 light:bg-white"
+                  className="h-11 w-full rounded-2xl border border-white/20 bg-white/10 px-3 text-sm outline-none"
                 >
                   {(Object.keys(modeLabels) as ListMode[]).map((mode) => (
                     <option key={mode} value={mode} className="text-slate-900">
                       {modeLabels[mode]}
                     </option>
                   ))}
+                </select>
+                <select
+                  value={theme}
+                  onChange={(e) => setTheme(e.target.value as ThemeVariant)}
+                  className="mt-2 h-11 w-full rounded-2xl border border-white/20 bg-white/10 px-3 text-sm outline-none"
+                >
+                  <option value="ocean" className="text-slate-900">
+                    Ocean Dark
+                  </option>
+                  <option value="graphite" className="text-slate-900">
+                    Graphite Dark
+                  </option>
+                  <option value="crimson" className="text-slate-900">
+                    Crimson Dark
+                  </option>
                 </select>
               </div>
 
