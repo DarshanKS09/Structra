@@ -1,6 +1,6 @@
 import { type TouchEvent, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { type ListItem, type ListMode } from "@/types/taskTypes";
+import { type ListItem } from "@/types/taskTypes";
 
 type Props = {
   item: ListItem;
@@ -9,22 +9,13 @@ type Props = {
   onEdit: () => void;
 };
 
-const modeAccent: Record<ListMode, string> = {
-  task: "from-sky-500/20 via-cyan-500/10 to-transparent",
-  grocery: "from-emerald-500/22 via-teal-500/10 to-transparent",
-  habit: "from-amber-500/20 via-orange-500/10 to-transparent",
-  study: "from-indigo-500/22 via-violet-500/10 to-transparent",
-  fitness: "from-rose-500/20 via-pink-500/10 to-transparent",
-  shopping: "from-fuchsia-500/20 via-purple-500/10 to-transparent",
-  meeting: "from-slate-500/20 via-zinc-500/10 to-transparent"
-};
-
 const completionStatus = (item: ListItem) =>
   "completed" in item ? item.completed : "purchased" in item ? item.purchased : false;
 
 export function ItemCard({ item, onToggle, onDelete, onEdit }: Props) {
   const startX = useRef(0);
   const [offsetX, setOffsetX] = useState(0);
+  const [expanded, setExpanded] = useState(false);
   const completed = completionStatus(item);
   const canToggle = item.mode !== "meeting";
   const details = useMemo(() => getDetails(item), [item]);
@@ -57,15 +48,20 @@ export function ItemCard({ item, onToggle, onDelete, onEdit }: Props) {
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
-        className="relative z-10 rounded-2xl border border-white/15 bg-gradient-to-r p-3 shadow-glass backdrop-blur-xl light:border-slate-300 light:bg-white"
+        className="themed-item relative z-10 rounded-xl border border-white/15 p-2.5 shadow-glass backdrop-blur-xl"
       >
-        <div className={`absolute inset-0 rounded-2xl bg-gradient-to-r ${modeAccent[item.mode]}`} />
         <div className="relative z-10">
-          <div className="flex items-start gap-2.5">
+          <div
+            onClick={() => setExpanded((prev) => !prev)}
+            className="flex w-full cursor-pointer items-center gap-2.5 text-left"
+          >
             {canToggle ? (
               <button
                 type="button"
-                onClick={onToggle}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onToggle();
+                }}
                 className={`mt-0.5 h-5 w-5 shrink-0 rounded-full border-2 ${
                   completed ? "border-emerald-300 bg-emerald-300" : "border-slate-300/80"
                 }`}
@@ -75,40 +71,31 @@ export function ItemCard({ item, onToggle, onDelete, onEdit }: Props) {
               <span className="mt-1 h-4 w-4 shrink-0 rounded-full border border-slate-400/70" />
             )}
             <div className="min-w-0 flex-1">
-              <h3 className={`text-sm font-semibold ${completed ? "line-through opacity-70" : ""}`}>
+              <h3 className={`truncate text-sm font-semibold ${completed ? "line-through opacity-70" : ""}`}>
                 {details.title}
               </h3>
-              <p className="mt-0.5 text-[11px] text-slate-300 light:text-slate-600">{details.subtitle}</p>
-              {details.meta.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {details.meta.map((tag) => (
-                    <span
-                      key={tag}
-                      className="rounded-full border border-white/20 bg-white/5 px-2 py-0.5 text-[10px] text-slate-200 light:border-slate-300 light:bg-slate-100 light:text-slate-700"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              )}
+              <p className="truncate text-[11px] text-slate-300">{details.meta[0] || details.subtitle}</p>
             </div>
+            <span className="text-xs text-slate-300">{expanded ? "▲" : "▼"}</span>
           </div>
-          <div className="mt-2.5 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={onEdit}
-              className="h-8 rounded-lg border border-white/20 px-3 text-[11px] light:border-slate-300"
-            >
-              Edit
-            </button>
-            <button
-              type="button"
-              onClick={onDelete}
-              className="h-8 rounded-lg bg-rose-500 px-3 text-[11px] font-semibold text-white"
-            >
-              Delete
-            </button>
-          </div>
+          {expanded && (
+            <div className="mt-2 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={onEdit}
+                className="h-8 rounded-lg border border-white/20 px-3 text-[11px]"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={onDelete}
+                className="h-8 rounded-lg bg-rose-500 px-3 text-[11px] font-semibold text-white"
+              >
+                Delete
+              </button>
+            </div>
+          )}
         </div>
       </motion.article>
     </div>
