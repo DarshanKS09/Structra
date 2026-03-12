@@ -18,6 +18,7 @@ import { type DraftByMode, type ListItem, type ListMode, modeLabels } from "@/ty
 export default function HomePage() {
   const [mounted, setMounted] = useState(false);
   const [themePulseId, setThemePulseId] = useState(0);
+  const [isMobileModeMenuOpen, setIsMobileModeMenuOpen] = useState(false);
   const {
     selectedMode,
     setMode,
@@ -171,25 +172,49 @@ export default function HomePage() {
 
               <div className="md:hidden">
                 <div className="flex items-center justify-between">
-                  <div className="relative w-44">
-                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-300">
-                      ===
-                    </span>
-                    <select
-                      id="mobile-mode-select"
-                      value={selectedMode}
-                      onChange={(e) => setMode(e.target.value as ListMode)}
-                      className="h-11 w-full appearance-none rounded-xl border border-white/20 bg-white/10 pl-8 pr-8 text-sm outline-none"
+                  <div className="relative">
+                    <motion.button
+                      type="button"
+                      onClick={() => setIsMobileModeMenuOpen((prev) => !prev)}
+                      whileTap={{ scale: 0.97 }}
+                      className="flex h-11 w-14 items-center justify-center rounded-xl border border-white/20 bg-white/10"
+                      aria-label="Open mode menu"
                     >
-                      {(Object.keys(modeLabels) as ListMode[]).map((mode) => (
-                        <option key={mode} value={mode} className="text-slate-900">
-                          {modeLabels[mode]}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-300">
-                      v
-                    </span>
+                      <span className="space-y-1">
+                        <span className="block h-0.5 w-4 rounded-full bg-slate-200" />
+                        <span className="block h-0.5 w-4 rounded-full bg-slate-200" />
+                        <span className="block h-0.5 w-4 rounded-full bg-slate-200" />
+                      </span>
+                    </motion.button>
+                    <AnimatePresence>
+                      {isMobileModeMenuOpen && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -6 }}
+                          transition={{ duration: 0.15 }}
+                          className="absolute left-0 top-12 z-30 w-52 rounded-xl border border-white/20 bg-slate-900/95 p-1.5 backdrop-blur-xl"
+                        >
+                          {(Object.keys(modeLabels) as ListMode[]).map((mode) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => {
+                                setMode(mode);
+                                setIsMobileModeMenuOpen(false);
+                              }}
+                              className={`mb-1 block h-9 w-full rounded-lg px-2 text-left text-xs ${
+                                selectedMode === mode
+                                  ? "themed-accent-solid font-semibold"
+                                  : "text-slate-200 hover:bg-white/10"
+                              }`}
+                            >
+                              {modeLabels[mode]}
+                            </button>
+                          ))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
                   <motion.button
                     type="button"
@@ -201,7 +226,6 @@ export default function HomePage() {
                     {themeMeta[theme].short}
                   </motion.button>
                 </div>
-                <div className="mt-2 text-center text-sm font-medium text-slate-200">{modeLabels[selectedMode]}</div>
               </div>
 
               <ModeToolbar
