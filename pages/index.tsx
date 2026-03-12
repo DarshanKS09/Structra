@@ -48,7 +48,7 @@ export default function HomePage() {
     if (!mounted) return;
     document.documentElement.classList.add("dark");
     document.documentElement.classList.remove("light");
-    document.documentElement.classList.remove("theme-ocean", "theme-graphite", "theme-crimson");
+    document.documentElement.classList.remove("theme-ocean", "theme-crimson", "theme-light");
     document.documentElement.classList.add(`theme-${theme}`);
   }, [theme, mounted]);
 
@@ -69,15 +69,15 @@ export default function HomePage() {
   const editingItem = allModeItems.find((item) => item.id === editingItemId);
   const themeMeta: Record<ThemeVariant, { short: string; className: string }> = {
     ocean: { short: "OC", className: "bg-sky-500 text-slate-950" },
-    graphite: { short: "GR", className: "bg-slate-500 text-white" },
-    crimson: { short: "CR", className: "bg-rose-500 text-white" }
+    crimson: { short: "CR", className: "bg-rose-500 text-white" },
+    light: { short: "LT", className: "bg-amber-100 text-slate-900 border border-slate-300" }
   };
 
   const cycleTheme = () => {
     const next: Record<ThemeVariant, ThemeVariant> = {
-      ocean: "graphite",
-      graphite: "crimson",
-      crimson: "ocean"
+      ocean: "crimson",
+      crimson: "light",
+      light: "ocean"
     };
     setTheme(next[theme]);
   };

@@ -42,6 +42,14 @@ body {
     linear-gradient(140deg, #020617 0%, #1f1020 46%, #140b12 100%);
 }
 
+.theme-light body {
+  color: #0f172a;
+  background-image:
+    radial-gradient(circle at 14% 8%, rgba(56, 189, 248, 0.14), transparent 42%),
+    radial-gradient(circle at 85% 14%, rgba(190, 242, 100, 0.18), transparent 34%),
+    linear-gradient(140deg, #f8fafc 0%, #eef2ff 42%, #ecfeff 100%);
+}
+
 .themed-item {
   background-image: linear-gradient(90deg, rgba(15, 23, 42, 0.86), rgba(2, 6, 23, 0.88));
 }
@@ -56,6 +64,27 @@ body {
 
 .theme-crimson .themed-item {
   background-image: linear-gradient(100deg, rgba(127, 29, 29, 0.52), rgba(136, 19, 55, 0.24), rgba(2, 6, 23, 0.9));
+}
+
+.theme-light .themed-item {
+  background-image: linear-gradient(100deg, rgba(255, 255, 255, 0.9), rgba(240, 249, 255, 0.9), rgba(236, 253, 245, 0.85));
+  border-color: rgba(15, 23, 42, 0.14);
+}
+
+/* Light theme contrast tuning */
+.theme-light .text-slate-300,
+.theme-light .text-slate-200 {
+  color: #334155 !important;
+}
+
+.theme-light .border-white\/20,
+.theme-light .border-white\/15 {
+  border-color: rgba(15, 23, 42, 0.16) !important;
+}
+
+.theme-light .bg-white\/10,
+.theme-light .bg-white\/5 {
+  background-color: rgba(255, 255, 255, 0.78) !important;
 }
 
 * {

@@ -8,7 +8,7 @@ import {
 } from "@/types/taskTypes";
 
 type FilterType = "all" | "active" | "completed";
-export type ThemeVariant = "ocean" | "graphite" | "crimson";
+export type ThemeVariant = "ocean" | "crimson" | "light";
 
 type TaskState = {
   selectedMode: ListMode | null;
@@ -157,9 +157,16 @@ export const useTaskStore = create<TaskState>()(
     }),
     {
       name: "futuristic-task-manager-v1",
+      version: 2,
       storage: createJSONStorage(() =>
         typeof window !== "undefined" ? localStorage : (undefined as unknown as Storage)
       ),
+      migrate: (persistedState: unknown) => {
+        const state = persistedState as TaskState | undefined;
+        if (!state) return state;
+        const nextTheme = (state as { theme?: string }).theme === "graphite" ? "light" : state.theme;
+        return { ...state, theme: nextTheme ?? "ocean" };
+      },
       partialize: (state) => ({
         itemsByMode: state.itemsByMode,
         selectedMode: state.selectedMode,
