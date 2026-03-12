@@ -102,6 +102,15 @@ body {
   color: #334155 !important;
 }
 
+.theme-light .text-slate-400,
+.theme-light .text-slate-500,
+.theme-light .text-slate-600,
+.theme-light .text-slate-700,
+.theme-light .text-slate-800,
+.theme-light .text-slate-900 {
+  color: #1f2937 !important;
+}
+
 .theme-light .border-white\/20,
 .theme-light .border-white\/15 {
   border-color: rgba(15, 23, 42, 0.16) !important;
@@ -116,12 +125,29 @@ body {
   color: #1f2937 !important;
 }
 
-.theme-light .placeholder\:text-slate-300::placeholder {
-  color: #64748b !important;
+.theme-light .placeholder\:text-slate-300::placeholder,
+.theme-light .placeholder\:text-slate-300\/75::placeholder,
+.theme-light input::placeholder,
+.theme-light textarea::placeholder {
+  color: #475569 !important;
+  opacity: 1 !important;
 }
 
 .theme-light .bg-surface {
   background-color: rgba(255, 247, 237, 0.58) !important;
+}
+
+.theme-light .text-white {
+  color: #1f2937 !important;
+}
+
+.theme-light .bg-slate-900\/95,
+.theme-light .bg-slate-900\/85 {
+  background-color: rgba(255, 247, 237, 0.94) !important;
+}
+
+.theme-light .bg-slate-950\/85 {
+  background-color: rgba(255, 247, 237, 0.92) !important;
 }
 
 .themed-accent {
