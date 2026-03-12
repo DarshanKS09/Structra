@@ -17,6 +17,7 @@ import { type DraftByMode, type ListItem, type ListMode, modeLabels } from "@/ty
 
 export default function HomePage() {
   const [mounted, setMounted] = useState(false);
+  const [themePulseId, setThemePulseId] = useState(0);
   const {
     selectedMode,
     setMode,
@@ -80,6 +81,7 @@ export default function HomePage() {
       light: "ocean"
     };
     setTheme(next[theme]);
+    setThemePulseId((prev) => prev + 1);
   };
 
   if (!mounted) return null;
@@ -91,7 +93,22 @@ export default function HomePage() {
         <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
       </Head>
 
-      <main className="mx-auto min-h-screen w-full max-w-5xl pb-20">
+      <AnimatePresence>
+        {themePulseId > 0 && (
+          <motion.div
+            key={themePulseId}
+            initial={{ opacity: 0.45, scale: 0.7 }}
+            animate={{ opacity: 0, scale: 1.18 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.65, ease: "easeOut" }}
+            className="pointer-events-none fixed inset-0 z-0"
+            style={{
+              background: "radial-gradient(circle at 85% 10%, var(--accent), transparent 55%)"
+            }}
+          />
+        )}
+      </AnimatePresence>
+      <main className="relative z-10 mx-auto min-h-screen w-full max-w-5xl pb-20">
         <AnimatePresence mode="wait">
           {!selectedMode ? (
             <motion.div
@@ -121,30 +138,34 @@ export default function HomePage() {
                 <div className="text-sm font-medium text-slate-300 light:text-slate-600">
                   {modeLabels[selectedMode]}
                 </div>
-                <button
+                <motion.button
                   type="button"
                   onClick={cycleTheme}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.93 }}
                   className={`h-10 w-10 rounded-full text-xs font-semibold ${themeMeta[theme].className}`}
                   title="Change Theme"
                 >
                   {themeMeta[theme].short}
-                </button>
+                </motion.button>
               </header>
 
               <div className="hidden gap-2 overflow-x-auto pb-1 md:flex">
                 {(Object.keys(modeLabels) as ListMode[]).map((mode) => (
-                  <button
+                  <motion.button
                     key={mode}
                     type="button"
                     onClick={() => setMode(mode)}
+                    whileHover={{ y: -2 }}
+                    whileTap={{ scale: 0.98 }}
                     className={`h-10 rounded-xl px-3 text-sm ${
                       selectedMode === mode
                         ? "themed-accent-solid font-semibold"
-                        : "border border-white/20 light:border-slate-300"
+                        : "border border-white/20 transition hover:border-white/40 hover:bg-white/10 light:border-slate-300"
                     }`}
                   >
                     {modeLabels[mode]}
-                  </button>
+                  </motion.button>
                 ))}
               </div>
 
@@ -170,14 +191,15 @@ export default function HomePage() {
                       v
                     </span>
                   </div>
-                  <button
+                  <motion.button
                     type="button"
                     onClick={cycleTheme}
+                    whileTap={{ scale: 0.92 }}
                     className={`h-11 w-11 rounded-full text-xs font-semibold ${themeMeta[theme].className}`}
                     title="Change Theme"
                   >
                     {themeMeta[theme].short}
-                  </button>
+                  </motion.button>
                 </div>
                 <div className="mt-2 text-center text-sm font-medium text-slate-200">{modeLabels[selectedMode]}</div>
               </div>

@@ -1,5 +1,5 @@
-import { type TouchEvent, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { useMemo, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { type ListItem } from "@/types/taskTypes";
 
 type Props = {
@@ -13,41 +13,21 @@ const completionStatus = (item: ListItem) =>
   "completed" in item ? item.completed : "purchased" in item ? item.purchased : false;
 
 export function ItemCard({ item, onToggle, onDelete, onEdit }: Props) {
-  const startX = useRef(0);
-  const [offsetX, setOffsetX] = useState(0);
   const [expanded, setExpanded] = useState(false);
+  const [celebrateKey, setCelebrateKey] = useState(0);
   const completed = completionStatus(item);
   const canToggle = item.mode !== "meeting";
   const details = useMemo(() => getDetails(item), [item]);
 
-  const handleTouchStart = (event: TouchEvent) => {
-    startX.current = event.touches[0].clientX;
-  };
-
-  const handleTouchMove = (event: TouchEvent) => {
-    const delta = event.touches[0].clientX - startX.current;
-    if (delta < 0) setOffsetX(Math.max(delta, -120));
-  };
-
-  const handleTouchEnd = () => {
-    if (offsetX < -75) onDelete();
-    setOffsetX(0);
-  };
-
   return (
-    <div className="relative overflow-hidden rounded-3xl">
-      <div className="absolute inset-y-0 right-0 flex w-24 items-center justify-center rounded-3xl bg-rose-500 text-sm font-semibold text-white">
-        Delete
-      </div>
+    <div className="relative overflow-hidden rounded-xl">
       <motion.article
         layout
         initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0, x: offsetX }}
+        animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.96, y: 8 }}
         transition={{ duration: 0.2 }}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
+        whileHover={{ y: -1, scale: 1.005 }}
         className="themed-item relative z-10 rounded-xl border border-white/15 p-2.5 shadow-glass backdrop-blur-xl"
       >
         <div className="relative z-10">
@@ -56,17 +36,23 @@ export function ItemCard({ item, onToggle, onDelete, onEdit }: Props) {
             className="flex w-full cursor-pointer items-center gap-2.5 text-left"
           >
             {canToggle ? (
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onToggle();
-                }}
-                className={`mt-0.5 h-5 w-5 shrink-0 rounded-full border-2 ${
-                  completed ? "border-emerald-300 bg-emerald-300" : "border-slate-300/80"
-                }`}
-                aria-label="Toggle complete"
-              />
+              <div className="relative">
+                <motion.button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (!completed) setCelebrateKey((prev) => prev + 1);
+                    onToggle();
+                  }}
+                  animate={completed ? { scale: [1, 1.2, 1] } : { scale: 1 }}
+                  transition={{ duration: 0.25 }}
+                  className={`mt-0.5 h-5 w-5 shrink-0 rounded-full border-2 ${
+                    completed ? "border-emerald-300 bg-emerald-300" : "border-slate-300/80"
+                  }`}
+                  aria-label="Toggle complete"
+                />
+                <CelebrateBurst burstKey={celebrateKey} />
+              </div>
             ) : (
               <span className="mt-1 h-4 w-4 shrink-0 rounded-full border border-slate-400/70" />
             )}
@@ -76,29 +62,67 @@ export function ItemCard({ item, onToggle, onDelete, onEdit }: Props) {
               </h3>
               <p className="truncate text-[11px] text-slate-300">{details.meta[0] || details.subtitle}</p>
             </div>
-            <span className="text-xs text-slate-300">{expanded ? "▲" : "▼"}</span>
+            <span className="text-xs text-slate-300">{expanded ? "^" : "v"}</span>
           </div>
-          {expanded && (
-            <div className="mt-2 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={onEdit}
-                className="h-8 rounded-lg border border-white/20 px-3 text-[11px]"
+          <AnimatePresence initial={false}>
+            {expanded && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.18 }}
+                className="mt-2 flex items-center justify-end gap-2 overflow-hidden"
               >
-                Edit
-              </button>
-              <button
-                type="button"
-                onClick={onDelete}
-                className="h-8 rounded-lg bg-rose-500 px-3 text-[11px] font-semibold text-white"
-              >
-                Delete
-              </button>
-            </div>
-          )}
+                <button
+                  type="button"
+                  onClick={onEdit}
+                  className="h-8 rounded-lg border border-white/20 px-3 text-[11px] transition hover:border-white/40 hover:bg-white/10"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={onDelete}
+                  className="h-8 rounded-lg bg-rose-500 px-3 text-[11px] font-semibold text-white transition hover:bg-rose-400"
+                >
+                  Delete
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </motion.article>
     </div>
+  );
+}
+
+function CelebrateBurst({ burstKey }: { burstKey: number }) {
+  const dots = [
+    { x: -14, y: -10, color: "#22c55e" },
+    { x: 0, y: -16, color: "#f59e0b" },
+    { x: 14, y: -8, color: "#60a5fa" },
+    { x: 12, y: 8, color: "#f472b6" },
+    { x: -10, y: 10, color: "#34d399" }
+  ];
+
+  return (
+    <AnimatePresence>
+      {burstKey > 0 && (
+        <div key={burstKey} className="pointer-events-none absolute left-2 top-2">
+          {dots.map((dot, idx) => (
+            <motion.span
+              key={`${burstKey}-${idx}`}
+              initial={{ x: 0, y: 0, scale: 0.4, opacity: 0.95 }}
+              animate={{ x: dot.x, y: dot.y, scale: 1, opacity: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.55, ease: "easeOut" }}
+              className="absolute h-1.5 w-1.5 rounded-full"
+              style={{ backgroundColor: dot.color }}
+            />
+          ))}
+        </div>
+      )}
+    </AnimatePresence>
   );
 }
 
