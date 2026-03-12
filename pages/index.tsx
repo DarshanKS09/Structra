@@ -69,6 +69,17 @@ export default function HomePage() {
   const items = selectedMode ? getVisibleItems(selectedMode) : [];
   const allModeItems = selectedMode ? getItemsForMode(selectedMode) : [];
   const editingItem = allModeItems.find((item) => item.id === editingItemId);
+  const counts = {
+    all: allModeItems.length,
+    completed: allModeItems.filter((item) =>
+      "completed" in item ? item.completed : "purchased" in item ? item.purchased : false
+    ).length
+  };
+  const filterCounts = {
+    all: counts.all,
+    completed: counts.completed,
+    active: counts.all - counts.completed
+  };
   const themeMeta: Record<ThemeVariant, { short: string; className: string }> = {
     ocean: { short: "OC", className: "bg-sky-500 text-slate-950" },
     crimson: { short: "CR", className: "bg-rose-500 text-white" },
@@ -235,6 +246,7 @@ export default function HomePage() {
                 filter={filter}
                 onFilterChange={setFilter}
                 progress={getProgress(selectedMode)}
+                counts={filterCounts}
               />
 
               <FloatingAddButton onClick={openAddModal} inline />

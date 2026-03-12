@@ -8,6 +8,11 @@ type Props = {
   filter: "all" | "active" | "completed";
   onFilterChange: (value: "all" | "active" | "completed") => void;
   progress: number;
+  counts: {
+    all: number;
+    active: number;
+    completed: number;
+  };
 };
 
 export function ModeToolbar({
@@ -16,7 +21,8 @@ export function ModeToolbar({
   onSearchChange,
   filter,
   onFilterChange,
-  progress
+  progress,
+  counts
 }: Props) {
   return (
     <motion.section
@@ -54,7 +60,7 @@ export function ModeToolbar({
                 : "border border-white/20 text-slate-200 light:border-slate-300 light:text-slate-700"
             }`}
           >
-            {option}
+            {option} <span className="text-[10px]">({counts[option]})</span>
           </button>
         ))}
       </div>
