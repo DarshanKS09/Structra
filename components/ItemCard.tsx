@@ -10,13 +10,13 @@ type Props = {
 };
 
 const modeAccent: Record<ListMode, string> = {
-  task: "from-sky-300/30 to-cyan-300/10",
-  grocery: "from-emerald-300/30 to-green-300/10",
-  habit: "from-orange-300/30 to-amber-300/10",
-  study: "from-violet-300/30 to-indigo-300/10",
-  fitness: "from-pink-300/30 to-rose-300/10",
-  shopping: "from-fuchsia-300/30 to-pink-300/10",
-  meeting: "from-slate-300/30 to-gray-300/10"
+  task: "from-sky-500/20 via-cyan-500/10 to-transparent",
+  grocery: "from-emerald-500/22 via-teal-500/10 to-transparent",
+  habit: "from-amber-500/20 via-orange-500/10 to-transparent",
+  study: "from-indigo-500/22 via-violet-500/10 to-transparent",
+  fitness: "from-rose-500/20 via-pink-500/10 to-transparent",
+  shopping: "from-fuchsia-500/20 via-purple-500/10 to-transparent",
+  meeting: "from-slate-500/20 via-zinc-500/10 to-transparent"
 };
 
 const completionStatus = (item: ListItem) =>
@@ -57,34 +57,34 @@ export function ItemCard({ item, onToggle, onDelete, onEdit }: Props) {
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
-        className="relative z-10 rounded-3xl border border-white/15 bg-gradient-to-r p-4 shadow-glass backdrop-blur-xl light:border-slate-300 light:bg-white"
+        className="relative z-10 rounded-2xl border border-white/15 bg-gradient-to-r p-3 shadow-glass backdrop-blur-xl light:border-slate-300 light:bg-white"
       >
-        <div className={`absolute inset-0 rounded-3xl bg-gradient-to-r ${modeAccent[item.mode]}`} />
+        <div className={`absolute inset-0 rounded-2xl bg-gradient-to-r ${modeAccent[item.mode]}`} />
         <div className="relative z-10">
-          <div className="flex items-start gap-3">
+          <div className="flex items-start gap-2.5">
             {canToggle ? (
               <button
                 type="button"
                 onClick={onToggle}
-                className={`mt-0.5 h-6 w-6 shrink-0 rounded-full border-2 ${
+                className={`mt-0.5 h-5 w-5 shrink-0 rounded-full border-2 ${
                   completed ? "border-emerald-300 bg-emerald-300" : "border-slate-300/80"
                 }`}
                 aria-label="Toggle complete"
               />
             ) : (
-              <span className="mt-1 h-5 w-5 shrink-0 rounded-full border border-slate-400/70" />
+              <span className="mt-1 h-4 w-4 shrink-0 rounded-full border border-slate-400/70" />
             )}
             <div className="min-w-0 flex-1">
               <h3 className={`text-sm font-semibold ${completed ? "line-through opacity-70" : ""}`}>
                 {details.title}
               </h3>
-              <p className="mt-1 text-xs text-slate-300 light:text-slate-600">{details.subtitle}</p>
+              <p className="mt-0.5 text-[11px] text-slate-300 light:text-slate-600">{details.subtitle}</p>
               {details.meta.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-2">
+                <div className="mt-2 flex flex-wrap gap-1.5">
                   {details.meta.map((tag) => (
                     <span
                       key={tag}
-                      className="rounded-full border border-white/20 bg-white/5 px-2 py-1 text-[11px] text-slate-200 light:border-slate-300 light:bg-slate-100 light:text-slate-700"
+                      className="rounded-full border border-white/20 bg-white/5 px-2 py-0.5 text-[10px] text-slate-200 light:border-slate-300 light:bg-slate-100 light:text-slate-700"
                     >
                       {tag}
                     </span>
@@ -93,18 +93,18 @@ export function ItemCard({ item, onToggle, onDelete, onEdit }: Props) {
               )}
             </div>
           </div>
-          <div className="mt-3 flex items-center justify-end gap-2">
+          <div className="mt-2.5 flex items-center justify-end gap-2">
             <button
               type="button"
               onClick={onEdit}
-              className="h-9 rounded-xl border border-white/20 px-3 text-xs light:border-slate-300"
+              className="h-8 rounded-lg border border-white/20 px-3 text-[11px] light:border-slate-300"
             >
               Edit
             </button>
             <button
               type="button"
               onClick={onDelete}
-              className="h-9 rounded-xl bg-rose-500 px-3 text-xs font-semibold text-white"
+              className="h-8 rounded-lg bg-rose-500 px-3 text-[11px] font-semibold text-white"
             >
               Delete
             </button>

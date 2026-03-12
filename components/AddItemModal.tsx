@@ -161,8 +161,6 @@ function Fields({
   form: FormState;
   setValue: (key: string, value: string | number | boolean) => void;
 }) {
-  const selectClass = `${inputBaseClass} text-slate-100 light:text-slate-900`;
-
   switch (mode) {
     case "task":
       return (
@@ -182,15 +180,11 @@ function Fields({
             onChange={(e) => setValue("description", e.target.value)}
           />
           <div className="grid grid-cols-2 gap-3">
-            <select
-              className={selectClass}
+            <OptionPills
               value={String(form.priority || "Medium")}
-              onChange={(e) => setValue("priority", e.target.value)}
-            >
-              <option value="Low">Low</option>
-              <option value="Medium">Medium</option>
-              <option value="High">High</option>
-            </select>
+              options={["Low", "Medium", "High"]}
+              onChange={(value) => setValue("priority", value)}
+            />
             <input
               type="date"
               className={inputBaseClass}
@@ -219,16 +213,11 @@ function Fields({
               value={Number(form.quantity || 1)}
               onChange={(e) => setValue("quantity", Number(e.target.value))}
             />
-            <select
-              className={selectClass}
+            <OptionPills
               value={String(form.unit || "pieces")}
-              onChange={(e) => setValue("unit", e.target.value)}
-            >
-              <option value="kg">kg</option>
-              <option value="g">g</option>
-              <option value="pieces">pieces</option>
-              <option value="liters">liters</option>
-            </select>
+              options={["kg", "g", "pieces", "liters"]}
+              onChange={(value) => setValue("unit", value)}
+            />
           </div>
         </>
       );
@@ -243,14 +232,11 @@ function Fields({
             onChange={(e) => setValue("habitName", e.target.value)}
           />
           <div className="grid grid-cols-2 gap-3">
-            <select
-              className={selectClass}
+            <OptionPills
               value={String(form.frequency || "Daily")}
-              onChange={(e) => setValue("frequency", e.target.value)}
-            >
-              <option value="Daily">Daily</option>
-              <option value="Weekly">Weekly</option>
-            </select>
+              options={["Daily", "Weekly"]}
+              onChange={(value) => setValue("frequency", value)}
+            />
             <input
               type="number"
               min={0}
@@ -342,15 +328,11 @@ function Fields({
               value={Number(form.price || 0)}
               onChange={(e) => setValue("price", Number(e.target.value))}
             />
-            <select
-              className={selectClass}
+            <OptionPills
               value={String(form.priority || "Medium")}
-              onChange={(e) => setValue("priority", e.target.value)}
-            >
-              <option value="Low">Low</option>
-              <option value="Medium">Medium</option>
-              <option value="High">High</option>
-            </select>
+              options={["Low", "Medium", "High"]}
+              onChange={(value) => setValue("priority", value)}
+            />
           </div>
         </>
       );
@@ -386,4 +368,33 @@ function Fields({
         </>
       );
   }
+}
+
+function OptionPills({
+  value,
+  options,
+  onChange
+}: {
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2 rounded-2xl border border-white/20 bg-white/5 p-1 light:border-slate-300 light:bg-white">
+      {options.map((option) => (
+        <button
+          key={option}
+          type="button"
+          onClick={() => onChange(option)}
+          className={`h-10 rounded-xl text-xs font-medium ${
+            value === option
+              ? "bg-sky-500 text-slate-950"
+              : "text-slate-200 light:text-slate-700"
+          }`}
+        >
+          {option}
+        </button>
+      ))}
+    </div>
+  );
 }

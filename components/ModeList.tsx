@@ -15,7 +15,7 @@ export function ModeList({ mode, items, onToggle, onDelete, onEdit }: Props) {
   if (!items.length) return <EmptyState mode={mode} />;
 
   return (
-    <div className="space-y-3 pb-28 md:pb-10">
+    <div className="max-h-[52vh] space-y-2 overflow-y-auto pr-1 pb-20 md:max-h-[58vh] md:pb-8">
       <AnimatePresence>
         {items.map((item) => (
           <ItemCard

@@ -67,6 +67,20 @@ export default function HomePage() {
   const items = selectedMode ? getVisibleItems(selectedMode) : [];
   const allModeItems = selectedMode ? getItemsForMode(selectedMode) : [];
   const editingItem = allModeItems.find((item) => item.id === editingItemId);
+  const themeMeta: Record<ThemeVariant, { short: string; className: string }> = {
+    ocean: { short: "OC", className: "bg-sky-500 text-slate-950" },
+    graphite: { short: "GR", className: "bg-slate-500 text-white" },
+    crimson: { short: "CR", className: "bg-rose-500 text-white" }
+  };
+
+  const cycleTheme = () => {
+    const next: Record<ThemeVariant, ThemeVariant> = {
+      ocean: "graphite",
+      graphite: "crimson",
+      crimson: "ocean"
+    };
+    setTheme(next[theme]);
+  };
 
   if (!mounted) return null;
 
@@ -107,21 +121,14 @@ export default function HomePage() {
                 <div className="text-sm font-medium text-slate-300 light:text-slate-600">
                   {modeLabels[selectedMode]}
                 </div>
-                <select
-                  value={theme}
-                  onChange={(e) => setTheme(e.target.value as ThemeVariant)}
-                  className="h-10 rounded-xl border border-white/20 bg-white/10 px-3 text-sm outline-none"
+                <button
+                  type="button"
+                  onClick={cycleTheme}
+                  className={`h-10 w-10 rounded-full text-xs font-semibold ${themeMeta[theme].className}`}
+                  title="Change Theme"
                 >
-                  <option value="ocean" className="text-slate-900">
-                    Ocean Dark
-                  </option>
-                  <option value="graphite" className="text-slate-900">
-                    Graphite Dark
-                  </option>
-                  <option value="crimson" className="text-slate-900">
-                    Crimson Dark
-                  </option>
-                </select>
+                  {themeMeta[theme].short}
+                </button>
               </header>
 
               <div className="hidden gap-2 overflow-x-auto pb-1 md:flex">
@@ -142,36 +149,37 @@ export default function HomePage() {
               </div>
 
               <div className="md:hidden">
-                <label htmlFor="mobile-mode-select" className="mb-1 block text-xs text-slate-300">
-                  Select mode
-                </label>
-                <select
-                  id="mobile-mode-select"
-                  value={selectedMode}
-                  onChange={(e) => setMode(e.target.value as ListMode)}
-                  className="h-11 w-full rounded-2xl border border-white/20 bg-white/10 px-3 text-sm outline-none"
-                >
-                  {(Object.keys(modeLabels) as ListMode[]).map((mode) => (
-                    <option key={mode} value={mode} className="text-slate-900">
-                      {modeLabels[mode]}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={theme}
-                  onChange={(e) => setTheme(e.target.value as ThemeVariant)}
-                  className="mt-2 h-11 w-full rounded-2xl border border-white/20 bg-white/10 px-3 text-sm outline-none"
-                >
-                  <option value="ocean" className="text-slate-900">
-                    Ocean Dark
-                  </option>
-                  <option value="graphite" className="text-slate-900">
-                    Graphite Dark
-                  </option>
-                  <option value="crimson" className="text-slate-900">
-                    Crimson Dark
-                  </option>
-                </select>
+                <div className="flex items-center justify-between">
+                  <div className="relative w-44">
+                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-300">
+                      ≡
+                    </span>
+                    <select
+                      id="mobile-mode-select"
+                      value={selectedMode}
+                      onChange={(e) => setMode(e.target.value as ListMode)}
+                      className="h-11 w-full appearance-none rounded-xl border border-white/20 bg-white/10 pl-8 pr-8 text-sm outline-none"
+                    >
+                      {(Object.keys(modeLabels) as ListMode[]).map((mode) => (
+                        <option key={mode} value={mode} className="text-slate-900">
+                          {modeLabels[mode]}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-300">
+                      ▼
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={cycleTheme}
+                    className={`h-11 w-11 rounded-full text-xs font-semibold ${themeMeta[theme].className}`}
+                    title="Change Theme"
+                  >
+                    {themeMeta[theme].short}
+                  </button>
+                </div>
+                <div className="mt-2 text-center text-sm font-medium text-slate-200">{modeLabels[selectedMode]}</div>
               </div>
 
               <ModeToolbar
