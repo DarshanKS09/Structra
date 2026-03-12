@@ -62,6 +62,25 @@ const matchesSearch = (item: ListItem, query: string): boolean => {
   return blob.includes(normalized);
 };
 
+const getSortableLabel = (item: ListItem): string => {
+  switch (item.mode) {
+    case "task":
+      return item.title;
+    case "grocery":
+      return item.itemName;
+    case "habit":
+      return item.habitName;
+    case "study":
+      return `${item.subject} ${item.topic}`;
+    case "fitness":
+      return item.exerciseName;
+    case "shopping":
+      return item.itemName;
+    case "meeting":
+      return item.meetingTitle;
+  }
+};
+
 const buildItem = <M extends ListMode>(mode: M, data: DraftByMode[M]): ModeItemMap[M] => {
   const now = new Date().toISOString();
   return {
@@ -146,7 +165,12 @@ export const useTaskStore = create<TaskState>()(
             if (filter === "all") return true;
             const complete = isCompleted(item);
             return filter === "completed" ? complete : !complete;
-          });
+          })
+          .sort((a, b) =>
+            getSortableLabel(a).localeCompare(getSortableLabel(b), undefined, {
+              sensitivity: "base"
+            })
+          );
       },
       getProgress: (mode) => {
         const items = get().itemsByMode[mode];
