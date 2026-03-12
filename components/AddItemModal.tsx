@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { type DraftByMode, type ListItem, type ListMode, modeLabels } from "@/types/taskTypes";
 
@@ -84,14 +84,29 @@ const toDraft = <M extends ListMode>(mode: M, form: FormState): DraftByMode[M] =
 
 export function AddItemModal({ mode, isOpen, editingItem, onClose, onSubmit, onUpdate }: Props) {
   const initial = useMemo(
-    () => (editingItem ? { ...defaults[mode], ...editingItem } : defaults[mode]),
+    () => (editingItem ? { ...defaults[mode], ...editingItem } : { ...defaults[mode] }),
     [editingItem, mode]
   );
   const [form, setForm] = useState<FormState>(initial);
+  const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     setForm(initial);
   }, [initial]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!editingItem) {
+      setForm({ ...defaults[mode] });
+    }
+    const timer = setTimeout(() => {
+      const firstInput = formRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+        "input[type='text'], input:not([type]), textarea"
+      );
+      firstInput?.focus();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [isOpen, mode, editingItem]);
 
   const setValue = (key: string, value: string | number | boolean) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -127,7 +142,7 @@ export function AddItemModal({ mode, isOpen, editingItem, onClose, onSubmit, onU
             <h2 className="text-lg font-semibold">
               {editingItem ? "Edit" : "New"} {modeLabels[mode]}
             </h2>
-            <form className="mt-4 space-y-3" onSubmit={submit}>
+            <form ref={formRef} className="mt-4 space-y-3" onSubmit={submit}>
               <Fields mode={mode} form={form} setValue={setValue} />
               <div className="flex gap-3 pt-2">
                 <button

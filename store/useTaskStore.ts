@@ -111,7 +111,8 @@ export const useTaskStore = create<TaskState>()(
               ...state.itemsByMode,
               [mode]: [item, ...state.itemsByMode[mode]]
             },
-            isAddModalOpen: false
+            isAddModalOpen: false,
+            editingItemId: null
           };
         }),
       updateItem: (mode, id, data) =>
