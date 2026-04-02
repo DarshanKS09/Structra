@@ -18,7 +18,7 @@ const inputBaseClass =
 
 const defaults: Record<ListMode, FormState> = {
   task: { title: "", description: "", priority: "Medium", dueDate: "", completed: false },
-  grocery: { itemName: "", quantity: 1, unit: "pieces", purchased: false },
+  grocery: { itemName: "", quantity: "", unit: "pieces", purchased: false },
   habit: { habitName: "", frequency: "Daily", streak: 0, completed: false },
   study: { subject: "", topic: "", estimatedStudyTime: "30 min", completed: false },
   fitness: { exerciseName: "", sets: 3, reps: 10, duration: "20 min", completed: false },
@@ -39,7 +39,7 @@ const toDraft = <M extends ListMode>(mode: M, form: FormState): DraftByMode[M] =
     case "grocery":
       return {
         itemName: String(form.itemName || ""),
-        quantity: Number(form.quantity || 1),
+        quantity: Number(form.quantity || 0),
         unit: form.unit as "kg" | "g" | "pieces" | "liters",
         purchased: Boolean(form.purchased)
       } as DraftByMode[M];
@@ -222,11 +222,15 @@ function Fields({
           <div className="grid grid-cols-2 gap-3">
             <input
               type="number"
-              min={1}
+              required
+              min={0}
+              step="any"
               className={inputBaseClass}
               placeholder="Quantity"
-              value={Number(form.quantity || 1)}
-              onChange={(e) => setValue("quantity", Number(e.target.value))}
+              value={String(form.quantity ?? "")}
+              onChange={(e) =>
+                setValue("quantity", e.target.value === "" ? "" : Number(e.target.value))
+              }
             />
             <OptionPills
               value={String(form.unit || "pieces")}
