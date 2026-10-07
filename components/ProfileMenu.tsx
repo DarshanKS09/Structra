@@ -1,24 +1,56 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/router";
 import { useAuth } from "@/lib/auth/AuthProvider";
 import { updateProfile } from "@/lib/data/account";
 import { toDataError, type DataError } from "@/lib/data/errors";
-import { avatarOptions, avatarDataUri, initialsOf, resolveAvatar } from "@/lib/profile/avatars";
+import {
+  avatarOptions,
+  avatarDataUri,
+  initialOf,
+  initialsOf,
+  resolveAvatarSrc
+} from "@/lib/profile/avatars";
+import { uploadAvatar, deleteAvatar, isManagedAvatar } from "@/lib/profile/storage";
 
 /**
- * Renders an avatar.
+ * Renders an avatar image.
  *
- * A plain `<img>` rather than `next/image`, deliberately. Every avatar here is
- * an inline `data:image/svg+xml` URI: there is no file to optimise, nothing to
- * fetch, and `next/image` would add an optimiser round trip and a domain check
- * for zero benefit. The rule is disabled in exactly one place rather than
- * repeated at every call site.
+ * A plain `<img>` rather than `next/image`, deliberately. Built-in avatars are
+ * inline `data:image/svg+xml` URIs, and an upload lives in Supabase Storage -
+ * neither is an importable static asset, so `next/image` would add an optimiser
+ * round trip and a remote-domain allowlist entry for no benefit at 40-48 px.
+ * The rule is disabled in exactly one place rather than at every call site.
  */
 function Avatar({ src, alt, className }: { src: string; alt: string; className: string }) {
   // eslint-disable-next-line @next/next/no-img-element
   return <img src={src} alt={alt} className={className} />;
+}
+
+/**
+ * The initial badge shown until an avatar is chosen.
+ *
+ * Kept as its own component so the header trigger, the popover preview and the
+ * roster chip cannot drift apart in size or colour.
+ */
+function InitialBadge({
+  label,
+  className = "",
+  textClassName = "text-xs"
+}: {
+  label: string;
+  className?: string;
+  textClassName?: string;
+}) {
+  return (
+    <span
+      className={`inline-flex items-center justify-center bg-sky-500 font-semibold text-slate-950 ${textClassName} ${className}`}
+      aria-hidden
+    >
+      {label}
+    </span>
+  );
 }
 
 /**
@@ -29,9 +61,10 @@ function Avatar({ src, alt, className }: { src: string; alt: string; className: 
  * profile, renaming, choosing an avatar and signing out are all reachable
  * without a navigation.
  *
- * Writes go to the existing `profiles` table through `updateProfile`. No new
- * table was created, and no user id is supplied by this component - the row is
- * addressed by the authenticated session, and RLS restricts it to the owner.
+ * Writes go to the existing `profiles` table through `updateProfile`, addressed
+ * by the authenticated session rather than by anything this component collected;
+ * RLS restricts the row to its owner. Uploaded photos go to Supabase Storage and
+ * only the resulting URL is written to the column.
  */
 export function ProfileMenu() {
   const { user, profile, refresh, signOut } = useAuth();
@@ -39,14 +72,14 @@ export function ProfileMenu() {
 
   const [open, setOpen] = useState(false);
   const [displayName, setDisplayName] = useState(profile?.display_name ?? "");
-  const [selectedAvatar, setSelectedAvatar] = useState<string | null>(
-    profile?.avatar_url ?? null
-  );
+  const [selectedAvatar, setSelectedAvatar] = useState<string | null>(profile?.avatar_url ?? null);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<DataError | null>(null);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const options = avatarOptions();
 
   // Re-sync from the server whenever the loaded profile changes (e.g. after a
@@ -73,7 +106,89 @@ export function ProfileMenu() {
     };
   }, [open]);
 
-  const currentAvatar = resolveAvatar(selectedAvatar ?? profile?.avatar_url);
+  const name = profile?.display_name?.trim() || "";
+  const fallbackEmail = user?.email ?? null;
+
+  // Priority: uploaded photo > built-in avatar > initial. `resolveAvatarSrc`
+  // returning null is what selects the initial.
+  const avatarSrc = resolveAvatarSrc(selectedAvatar ?? profile?.avatar_url);
+  const initial = initialOf(name, fallbackEmail);
+  const hasUpload = isManagedAvatar(selectedAvatar ?? profile?.avatar_url ?? "");
+
+  /**
+   * Persists an avatar value, tolerating failure.
+   *
+   * The previous value is kept so a rejected write leaves the UI showing what
+   * the database still holds, rather than a selection that was never saved.
+   */
+  const persistAvatar = useCallback(
+    async (next: string | null): Promise<boolean> => {
+      if (!user) return false;
+      const previous = selectedAvatar;
+      setSelectedAvatar(next);
+      setError(null);
+      setSaved(false);
+      try {
+        await updateProfile(user.id, { avatar_url: next });
+        await refresh();
+        setSaved(true);
+        return true;
+      } catch (caught) {
+        setSelectedAvatar(previous);
+        setError(toDataError(caught));
+        return false;
+      }
+    },
+    [user, selectedAvatar, refresh]
+  );
+
+  const pickAvatar = async (id: string) => {
+    const uri = avatarDataUri(id);
+    if (!uri) return;
+    // Choosing a built-in avatar replaces any upload, so the old file is no
+    // longer referenced by the profile.
+    const current = selectedAvatar ?? profile?.avatar_url ?? null;
+    if (current && isManagedAvatar(current) && user) {
+      await deleteAvatar(user.id, current);
+    }
+    await persistAvatar(uri);
+  };
+
+  const resetAvatar = async () => {
+    const current = selectedAvatar ?? profile?.avatar_url ?? null;
+    if (current && isManagedAvatar(current) && user) {
+      await deleteAvatar(user.id, current);
+    }
+    // null means "no avatar chosen", which makes the initial render again.
+    await persistAvatar(null);
+  };
+
+  const onPickFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    // Clear the input so picking the same file twice still fires a change event.
+    event.target.value = "";
+    if (!file || !user) return;
+
+    setUploading(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const url = await uploadAvatar(user.id, file);
+      // Replace a previously uploaded file rather than leaving both on disk.
+      const previous = selectedAvatar ?? profile?.avatar_url ?? null;
+      if (previous && isManagedAvatar(previous)) {
+        await deleteAvatar(user.id, previous);
+      }
+      setSelectedAvatar(url);
+      await updateProfile(user.id, { avatar_url: url });
+      await refresh();
+      setSaved(true);
+    } catch (caught) {
+      setError(toDataError(caught));
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const save = async () => {
     if (!user) return;
@@ -83,8 +198,7 @@ export function ProfileMenu() {
     try {
       // Addressed by the session's user id, never by anything the UI collected.
       await updateProfile(user.id, {
-        display_name: displayName.trim() || null,
-        avatar_url: selectedAvatar ?? null
+        display_name: displayName.trim() || null
       });
       await refresh();
       setSaved(true);
@@ -95,27 +209,16 @@ export function ProfileMenu() {
     }
   };
 
-  const pickAvatar = async (id: string) => {
-    const uri = avatarDataUri(id);
-    if (!uri) return;
-    setSelectedAvatar(uri);
-    setError(null);
-    setSaved(false);
-    // Persist immediately so the choice survives a refresh without extra clicks.
-    if (!user) return;
-    try {
-      await updateProfile(user.id, { avatar_url: uri });
-      await refresh();
-      setSaved(true);
-    } catch (caught) {
-      setError(toDataError(caught));
-    }
-  };
-
   const handleSignOut = async () => {
     await signOut();
     void router.replace("/login");
   };
+
+  const preview = avatarSrc ? (
+    <Avatar src={avatarSrc} alt="" className="h-full w-full object-cover" />
+  ) : (
+    <InitialBadge label={initial} className="h-full w-full" textClassName="text-base" />
+  );
 
   return (
     <div className="relative" ref={wrapperRef}>
@@ -125,10 +228,10 @@ export function ProfileMenu() {
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label="Profile"
-        title={profile?.display_name ?? user?.email ?? "Profile"}
+        title={name || fallbackEmail || "Profile"}
         className="h-10 w-10 overflow-hidden rounded-full border border-white/25 bg-white/10 transition hover:border-white/50"
       >
-        <Avatar src={currentAvatar} alt="" className="h-full w-full object-cover" />
+        {preview}
       </button>
 
       {open ? (
@@ -138,17 +241,17 @@ export function ProfileMenu() {
           className="absolute right-0 top-12 z-40 w-72 rounded-2xl border border-white/15 bg-slate-900/95 p-4 shadow-2xl backdrop-blur-xl light:border-slate-300 light:bg-white"
         >
           <div className="flex items-center gap-3">
-            <Avatar
-              src={currentAvatar}
-              alt=""
-              className="h-12 w-12 shrink-0 rounded-full border border-white/20 object-cover"
-            />
+            <span className="h-12 w-12 shrink-0 overflow-hidden rounded-full border border-white/20">
+              {avatarSrc ? (
+                <Avatar src={avatarSrc} alt="" className="h-full w-full object-cover" />
+              ) : (
+                <InitialBadge label={initial} className="h-full w-full" textClassName="text-lg" />
+              )}
+            </span>
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">
-                {profile?.display_name?.trim() || "No name set"}
-              </p>
+              <p className="truncate text-sm font-semibold">{name || "No name set"}</p>
               <p className="truncate text-[11px] text-slate-400 light:text-slate-500">
-                {user?.email ?? ""}
+                {fallbackEmail ?? ""}
               </p>
             </div>
           </div>
@@ -174,11 +277,44 @@ export function ProfileMenu() {
           </label>
 
           <p className="mt-3 mb-1.5 text-[11px] text-slate-300 light:text-slate-600">
-            Avatar
+            Your photo
+          </p>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            onChange={(e) => void onPickFile(e)}
+            className="hidden"
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="h-10 flex-1 rounded-xl border border-white/25 text-xs font-medium transition hover:border-white/50 disabled:opacity-60 light:border-slate-300"
+            >
+              {uploading ? "Uploading..." : hasUpload ? "Replace photo" : "Upload photo"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void resetAvatar()}
+              disabled={uploading || !selectedAvatar}
+              title="Show my initial instead"
+              className="h-10 rounded-xl border border-white/25 px-3 text-xs font-medium transition hover:border-white/50 disabled:opacity-40 light:border-slate-300"
+            >
+              Use initial
+            </button>
+          </div>
+          <p className="mt-1 text-[10px] text-slate-400 light:text-slate-500">
+            JPEG, PNG, WebP or GIF, up to 2 MB. Picked from your device or your phone&apos;s gallery.
+          </p>
+
+          <p className="mt-3 mb-1.5 text-[11px] text-slate-300 light:text-slate-600">
+            Built-in avatars
           </p>
           <div className="grid grid-cols-4 gap-2">
             {options.map((option) => {
-              const isActive = currentAvatar === option.dataUri;
+              const isActive = !hasUpload && avatarSrc === option.dataUri;
               return (
                 <button
                   key={option.id}
@@ -235,8 +371,7 @@ export function ProfileMenu() {
 }
 
 /**
- * Small initials badge, used before an avatar has been chosen.
- * Exported so the header can render a consistent identity chip.
+ * Small initials badge, used where a wider identity chip is rendered.
  */
 export function ProfileInitials({
   displayName,
@@ -248,11 +383,11 @@ export function ProfileInitials({
   className?: string;
 }) {
   return (
-    <span
-      className={`inline-flex h-10 w-10 items-center justify-center rounded-full bg-sky-500 text-xs font-semibold text-slate-950 ${className}`}
-      aria-hidden
-    >
-      {initialsOf(displayName, email)}
-    </span>
+    <InitialBadge
+      label={initialsOf(displayName, email)}
+      className={`h-10 w-10 rounded-full ${className}`}
+    />
   );
 }
+
+export { InitialBadge };

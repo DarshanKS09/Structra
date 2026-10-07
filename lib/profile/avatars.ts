@@ -1,21 +1,32 @@
 /**
- * Built-in avatar options.
+ * Avatar options and resolution.
  *
  * ---------------------------------------------------------------------------
- * WHY INLINE SVG DATA URIs
+ * WHAT LIVES IN `profiles.avatar_url`
  * ---------------------------------------------------------------------------
- * The avatars are generated locally and stored as `data:` URIs in
- * `profiles.avatar_url`. That was chosen over shipping image files because:
+ * One text column holds all three avatar kinds, and the shape of the value
+ * identifies which:
  *
- *   - no new static assets to build, bundle or host
- *   - no network request per avatar in the picker, so it renders instantly
+ *   data:image/svg+xml,...   a built-in avatar (small, self-contained)
+ *   https://.../avatars/...  a photo the user uploaded (Supabase Storage)
+ *   null                     no choice made yet, so show the user's initial
+ *
+ * Deriving the kind from the stored value keeps the schema unchanged - there is
+ * no new column, no new table and no discriminator to keep in sync.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY BUILT-IN AVATARS ARE INLINE SVG DATA URIs
+ * ---------------------------------------------------------------------------
+ * They are generated locally and stored as `data:` URIs rather than shipped as
+ * image files, because:
+ *
+ *   - no static assets to build, bundle or host
+ *   - no network request per option, so the picker renders instantly
  *   - a data URI genuinely is a URL, so the column keeps its meaning
- *   - a selected avatar keeps working if the app is ever self-hosted offline
- *
- * Each avatar is a deterministic gradient plus a geometric mark, seeded from a
- * fixed id, so a given option always looks the same.
+ *   - a selection keeps working if the app is ever self-hosted offline
  */
 
+/** One selectable built-in avatar. */
 export type BuiltInAvatar = {
   id: string;
   label: string;
@@ -63,25 +74,57 @@ export const avatarDataUri = (id: string): string | null => {
 export const avatarOptions = (): { id: string; label: string; dataUri: string }[] =>
   AVATARS.map((a) => ({ id: a.id, label: a.label, dataUri: svgFor(a) }));
 
-/** The avatar shown before one has been chosen. */
-export const DEFAULT_AVATAR_URI = svgFor(AVATARS[0]);
+/**
+ * True when the stored value is a built-in avatar rather than an upload.
+ *
+ * Used by the picker to highlight the active option, and by the "reset" control
+ * to tell an uploaded photo apart from a chosen avatar.
+ */
+export const isBuiltInAvatar = (stored: string | null | undefined): boolean =>
+  typeof stored === "string" && stored.startsWith("data:image/svg+xml");
 
 /**
- * Resolves whatever is stored in `profiles.avatar_url` to something renderable.
+ * Resolves `profiles.avatar_url` to an image source, or `null` when the user
+ * has not chosen one.
  *
- * Two shapes are supported: one of our own data URIs, and any absolute URL a
- * user may have had stored previously. Anything unrecognised falls back to the
- * default rather than rendering a broken image.
+ * Returning `null` rather than a placeholder image is deliberate: the caller
+ * renders the user's initial instead, which has to stay in sync with the name.
+ * Substituting a fixed image here would be exactly the behaviour this replaces.
+ *
+ * Anything unrecognised also resolves to `null`, so a corrupt or unexpected
+ * value degrades to an initial rather than a broken image.
  */
-export const resolveAvatar = (stored: string | null | undefined): string => {
-  if (!stored) return DEFAULT_AVATAR_URI;
-  const trimmed = stored.trim();
-  if (!trimmed) return DEFAULT_AVATAR_URI;
-  if (trimmed.startsWith("data:image/svg+xml") || /^https?:\/\//i.test(trimmed)) return trimmed;
-  return DEFAULT_AVATAR_URI;
+export const resolveAvatarSrc = (stored: string | null | undefined): string | null => {
+  const trimmed = stored?.trim();
+  if (!trimmed) return null;
+  if (isBuiltInAvatar(trimmed)) return trimmed;
+  if (/^https:\/\//i.test(trimmed)) return trimmed;
+  // Plain http is accepted only for loopback, so a misconfigured public URL
+  // cannot pull the avatar onto an insecure or attacker-chosen origin.
+  if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(trimmed)) return trimmed;
+  return null;
 };
 
-/** Up to two letters for the initials badge. */
+/**
+ * The uppercase initial shown until the user picks an avatar.
+ *
+ * Prefers the display name, falls back to the email's local part so a user who
+ * has not set a name still gets a stable letter rather than a placeholder. Only
+ * the first letter of the first word is used, per the product requirement.
+ */
+export const initialOf = (displayName: string | null | undefined, email?: string | null): string => {
+  const fromName = displayName?.trim();
+  const source = fromName || email?.trim().split("@")[0]?.trim() || "";
+  // Skip to the first alphanumeric character, so a name like "!!!" or "..."
+  // falls back to "?" instead of rendering punctuation as the identity.
+  const match = source.match(/[0-9\p{L}\p{N}]/u);
+  if (!match) return "?";
+  // toUpperCase on the character, not the whole string: some scripts have
+  // multi-character casings that would otherwise overflow the badge.
+  return match[0].toUpperCase();
+};
+
+/** Up to two letters, used where a wider identity chip is rendered. */
 export const initialsOf = (displayName: string | null | undefined, email?: string | null): string => {
   const source = displayName?.trim() || email?.trim() || "";
   const parts = source.split(/[\s._-]+/).filter(Boolean);

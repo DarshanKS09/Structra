@@ -37,8 +37,16 @@ export const getProfile = async (userId: string): Promise<ProfileRow | null> => 
   return data;
 };
 
+/**
+ * Updates presentation fields on the user's own profile row.
+ *
+ * The guard rejects an empty patch, but must NOT reject a patch whose values are
+ * all null: clearing `avatar_url` is how a user goes from a photo or built-in
+ * avatar back to their initial, so `{ avatar_url: null }` is a meaningful
+ * update. Only a patch with no keys at all is a caller mistake.
+ */
 export const updateProfile = async (userId: string, patch: ProfileUpdate): Promise<ProfileRow> => {
-  if (!patch.display_name && Object.keys(patch).length === 1) {
+  if (Object.keys(patch).length === 0) {
     throw new DataError("VALIDATION", "There is nothing to update.");
   }
   const { data, error } = await db()
