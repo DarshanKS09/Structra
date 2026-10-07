@@ -1,10 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/router";
 import { useAuth } from "@/lib/auth/AuthProvider";
 import { updateProfile } from "@/lib/data/account";
-import { toDataError, type DataError } from "@/lib/data/errors";
+import { toDataError, DataError } from "@/lib/data/errors";
 import {
   avatarOptions,
   avatarDataUri,
@@ -12,7 +11,12 @@ import {
   initialsOf,
   resolveAvatarSrc
 } from "@/lib/profile/avatars";
-import { uploadAvatar, deleteAvatar, isManagedAvatar } from "@/lib/profile/storage";
+import {
+  uploadAvatar,
+  deleteAvatar,
+  isManagedAvatar,
+  validateAvatarFile
+} from "@/lib/profile/storage";
 
 /**
  * Renders an avatar image.
@@ -68,7 +72,6 @@ function InitialBadge({
  */
 export function ProfileMenu() {
   const { user, profile, refresh, signOut } = useAuth();
-  const router = useRouter();
 
   const [open, setOpen] = useState(false);
   const [displayName, setDisplayName] = useState(profile?.display_name ?? "");
@@ -81,6 +84,37 @@ export function ProfileMenu() {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const options = avatarOptions();
+
+  /**
+   * A file the user has picked but not yet saved.
+   *
+   * Held in component state only: an unconfirmed pick must never reach
+   * `profiles` or Storage, and nothing here is persisted anywhere.
+   */
+  const [pendingPhoto, setPendingPhoto] = useState<{ file: File; preview: string } | null>(null);
+
+  // Object URLs are not garbage collected on their own. Revoking the previous
+  // one when a new file is picked, and on unmount, keeps them from leaking for
+  // the lifetime of the document.
+  const pendingPreviewRef = useRef<string | null>(null);
+  useEffect(() => {
+    pendingPreviewRef.current = pendingPhoto?.preview ?? null;
+  }, [pendingPhoto]);
+  useEffect(
+    () => () => {
+      if (pendingPreviewRef.current) URL.revokeObjectURL(pendingPreviewRef.current);
+    },
+    []
+  );
+
+  const discardPendingPhoto = useCallback(() => {
+    setPendingPhoto((previous) => {
+      if (previous?.preview) URL.revokeObjectURL(previous.preview);
+      return null;
+    });
+    setError(null);
+    setSaved(false);
+  }, []);
 
   // Re-sync from the server whenever the loaded profile changes (e.g. after a
   // refresh), so the inputs never show stale local edits.
@@ -145,6 +179,9 @@ export function ProfileMenu() {
   const pickAvatar = async (id: string) => {
     const uri = avatarDataUri(id);
     if (!uri) return;
+    // Choosing an animal discards any unsaved pick, so the preview cannot later
+    // resurface over the animal the user just chose.
+    discardPendingPhoto();
     // Choosing a built-in avatar replaces any upload, so the old file is no
     // longer referenced by the profile.
     const current = selectedAvatar ?? profile?.avatar_url ?? null;
@@ -155,6 +192,7 @@ export function ProfileMenu() {
   };
 
   const resetAvatar = async () => {
+    discardPendingPhoto();
     const current = selectedAvatar ?? profile?.avatar_url ?? null;
     if (current && isManagedAvatar(current) && user) {
       await deleteAvatar(user.id, current);
@@ -163,11 +201,38 @@ export function ProfileMenu() {
     await persistAvatar(null);
   };
 
-  const onPickFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  /**
+   * Handles a file being picked: validate it, then hold it for preview.
+   *
+   * Nothing is uploaded yet. On mobile this is what lets the user confirm the
+   * right photo was chosen from the gallery before it becomes their avatar.
+   */
+  const onPickFile = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     // Clear the input so picking the same file twice still fires a change event.
     event.target.value = "";
-    if (!file || !user) return;
+    if (!file) return;
+
+    // Release the previous preview before taking a new one.
+    if (pendingPhoto?.preview) URL.revokeObjectURL(pendingPhoto.preview);
+
+    const check = validateAvatarFile(file);
+    if (!check.ok) {
+      setPendingPhoto(null);
+      setError(toDataError(new DataError("VALIDATION", check.message)));
+      setSaved(false);
+      return;
+    }
+
+    setError(null);
+    setSaved(false);
+    setPendingPhoto({ file, preview: URL.createObjectURL(file) });
+  };
+
+  /** Uploads the previewed file and makes it the profile avatar. */
+  const confirmUpload = async () => {
+    if (!pendingPhoto || !user) return;
+    const { file, preview } = pendingPhoto;
 
     setUploading(true);
     setError(null);
@@ -180,10 +245,14 @@ export function ProfileMenu() {
         await deleteAvatar(user.id, previous);
       }
       setSelectedAvatar(url);
+      setPendingPhoto(null);
+      if (preview) URL.revokeObjectURL(preview);
       await updateProfile(user.id, { avatar_url: url });
       await refresh();
       setSaved(true);
     } catch (caught) {
+      // The profile is unchanged and the preview is kept, so the user can retry
+      // without picking the file again.
       setError(toDataError(caught));
     } finally {
       setUploading(false);
@@ -209,9 +278,27 @@ export function ProfileMenu() {
     }
   };
 
+  /**
+   * Signs out and lands on the login page with a FULL navigation.
+   *
+   * `router.replace` would only change the client-side route, so
+   * `getServerSideProps` would never re-run and the app's React tree would
+   * survive the sign-out. A hard navigation is what guarantees the protected
+   * page re-evaluates the now-absent session from scratch, so reopening
+   * Structra cannot restore the previous session from memory.
+   */
   const handleSignOut = async () => {
-    await signOut();
-    void router.replace("/login");
+    setSaving(true);
+    setError(null);
+    const failure = await signOut();
+    if (failure) {
+      setError(failure);
+      setSaving(false);
+      return;
+    }
+    // `replace` so the app does not sit in history; a refresh afterwards must
+    // land on /login, not bounce back into the app.
+    window.location.replace("/login");
   };
 
   const preview = avatarSrc ? (
@@ -286,33 +373,61 @@ export function ProfileMenu() {
             onChange={(e) => void onPickFile(e)}
             className="hidden"
           />
-          <div className="flex gap-2">
+
+          {pendingPhoto ? (
+            // A picked file is previewed before anything is written, so the
+            // user can confirm the right image was chosen from their gallery.
+            <div className="rounded-xl border border-white/20 bg-white/5 p-2">
+              <div className="flex items-center gap-2">
+                <span className="h-12 w-12 shrink-0 overflow-hidden rounded-full">
+                  <Avatar src={pendingPhoto.preview} alt="" className="h-full w-full object-cover" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[11px] text-slate-200 light:text-slate-800">
+                    {pendingPhoto.file.name}
+                  </p>
+                  <p className="text-[10px] text-slate-400 light:text-slate-500">
+                    {(pendingPhoto.file.size / 1024).toFixed(0)} KB
+                  </p>
+                </div>
+              </div>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => void confirmUpload()}
+                  disabled={uploading}
+                  className="themed-accent-solid h-9 flex-1 rounded-lg text-xs font-semibold disabled:opacity-60"
+                >
+                  {uploading ? "Saving..." : "Save photo"}
+                </button>
+                <button
+                  type="button"
+                  onClick={discardPendingPhoto}
+                  disabled={uploading}
+                  className="h-9 rounded-lg border border-white/25 px-3 text-xs font-medium disabled:opacity-40 light:border-slate-300"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
-              className="h-10 flex-1 rounded-xl border border-white/25 text-xs font-medium transition hover:border-white/50 disabled:opacity-60 light:border-slate-300"
+              className="h-10 w-full rounded-xl border border-white/25 text-xs font-medium transition hover:border-white/50 disabled:opacity-60 light:border-slate-300"
             >
-              {uploading ? "Uploading..." : hasUpload ? "Replace photo" : "Upload photo"}
+              {uploading ? "Uploading..." : hasUpload ? "Replace photo" : "Upload from device"}
             </button>
-            <button
-              type="button"
-              onClick={() => void resetAvatar()}
-              disabled={uploading || !selectedAvatar}
-              title="Show my initial instead"
-              className="h-10 rounded-xl border border-white/25 px-3 text-xs font-medium transition hover:border-white/50 disabled:opacity-40 light:border-slate-300"
-            >
-              Use initial
-            </button>
-          </div>
+          )}
           <p className="mt-1 text-[10px] text-slate-400 light:text-slate-500">
             JPEG, PNG, WebP or GIF, up to 2 MB. Picked from your device or your phone&apos;s gallery.
           </p>
 
           <p className="mt-3 mb-1.5 text-[11px] text-slate-300 light:text-slate-600">
-            Built-in avatars
+            Animal avatars
           </p>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-6 gap-1.5">
             {options.map((option) => {
               const isActive = !hasUpload && avatarSrc === option.dataUri;
               return (
@@ -323,7 +438,7 @@ export function ProfileMenu() {
                   title={option.label}
                   aria-label={`${option.label} avatar`}
                   aria-pressed={isActive}
-                  className={`h-11 w-11 overflow-hidden rounded-full border-2 transition ${
+                  className={`h-10 w-10 overflow-hidden rounded-full border-2 transition ${
                     isActive
                       ? "themed-accent-solid border-transparent"
                       : "border-white/25 hover:border-white/60"

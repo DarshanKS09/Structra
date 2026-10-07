@@ -93,6 +93,9 @@ export { issueFrom as authIssueFrom };
  * revalidates the JWT with the auth server. `getSession()` reads a
  * client-readable cookie and must never be trusted for an authorisation
  * decision.
+ *
+ * An error here is treated as "no user" rather than as an exception: an expired
+ * or absent session is an ordinary unauthenticated state, not a fault.
  */
 export const getCurrentUser = async (): Promise<User | null> => {
   const { data, error } = await db().auth.getUser();
@@ -103,9 +106,51 @@ export const getCurrentUser = async (): Promise<User | null> => {
   return data.user ?? null;
 };
 
+/**
+ * Resolves the current auth state for the app's startup decision.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY A NETWORK FAILURE IS "unknown", NOT "unauthenticated"
+ * ---------------------------------------------------------------------------
+ * `getUser()` has to reach the auth server, so it can fail for reasons that
+ * have nothing to do with the session: the device is offline, DNS fails, the
+ * request is blocked. Collapsing those into "signed out" makes a connectivity
+ * blip eject a perfectly valid user to the login screen.
+ *
+ * So the three states are kept distinct:
+ *
+ *   authenticated    the server confirmed a session
+ *   unauthenticated  the server confirmed there is no session (real answer)
+ *   unknown          the question could not be answered
+ *
+ * Only an explicit confirmation of "no session" may send someone to the login
+ * page. `unknown` keeps the startup gate in its loading state, which is exactly
+ * requirement 4's "do not treat 'still loading' as 'unauthenticated'".
+ */
 export const getAuthState = async (): Promise<AuthState> => {
-  const user = await getCurrentUser();
-  return { status: user ? "authenticated" : "unauthenticated", user };
+  try {
+    const { data, error } = await db().auth.getUser();
+
+    if (error) {
+      // Distinguish "there is no session" from "we could not ask".
+      //   403 / 400 Invalid Refresh Token -> genuinely signed out
+      //   401                            -> genuinely signed out
+      //   anything else (fetch/network)  -> unknown
+      const status = (error as { status?: number }).status;
+      const isAuthRejection = status === 401 || status === 403 || status === 400;
+      if (isAuthRejection) {
+        return { status: "unauthenticated", user: null };
+      }
+      return { status: "unknown", user: null };
+    }
+
+    return data.user
+      ? { status: "authenticated", user: data.user }
+      : { status: "unauthenticated", user: null };
+  } catch {
+    // A thrown error means the check did not complete.
+    return { status: "unknown", user: null };
+  }
 };
 
 /**
@@ -197,8 +242,27 @@ export const signIn = async (email: string, password: string): Promise<AuthResul
   return { ok: true, value: data.user };
 };
 
+/**
+ * Signs the current session out.
+ *
+ * WHY THE SCOPE IS EXPLICIT
+ *
+ * `signOut()` with no argument defaults to `scope: "global"`, which revokes the
+ * refresh token for EVERY device signed in to this account, not just this one.
+ * A user who signs out on their laptop would silently be signed out on their
+ * phone too, which is not what "Log out" implies here.
+ *
+ * `"local"` signs out only the session making the request: this device's tokens
+ * are discarded and the cookie is cleared, while other devices keep working. That
+ * matches the button's meaning and still fully satisfies requirement 3 for the
+ * session in use.
+ *
+ * Note this does not stop an already-issued access token from working until it
+ * expires (JWTs cannot be revoked individually). That window is inherent to
+ * stateless tokens, not a consequence of this scope.
+ */
 export const signOut = async (): Promise<AuthResult> => {
-  const { error } = await db().auth.signOut();
+  const { error } = await db().auth.signOut({ scope: "local" });
   if (error) return fail(toDataError(error, "Could not sign out."));
   return { ok: true, value: undefined };
 };

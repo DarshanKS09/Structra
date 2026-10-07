@@ -46,7 +46,13 @@ export type AuthContextValue = {
   bootstrapping: boolean;
   error: DataError | null;
   refresh: () => Promise<void>;
-  signOut: () => Promise<void>;
+  /**
+   * Signs out and clears client auth state.
+   *
+   * Resolves with a `DataError` when the server call failed, or null on success.
+   * Local state is cleared either way - see the implementation for why.
+   */
+  signOut: () => Promise<DataError | null>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -134,6 +140,12 @@ export function AuthProvider({
       void (async () => {
         const state = await getAuthState();
         if (cancelled || !mounted.current) return;
+
+        // "unknown" must NOT be collapsed into "unauthenticated". It means the
+        // session check could not complete (offline, blocked request), so the
+        // startup gate stays in its loading state and waits for the
+        // onAuthStateChange subscription below to resolve it. Deciding
+        // "signed out" here would eject a valid user on a connectivity blip.
         setUser(state.user);
         setStatus(state.status);
         if (state.user) void bootstrap(state.user.id);
@@ -180,12 +192,37 @@ export function AuthProvider({
     else clearSession();
   }, [bootstrap, clearSession]);
 
+  /**
+   * Signs out and drops every piece of client auth state.
+   *
+   * The local state is cleared even when the network call FAILS. That is the
+   * deliberate choice: Supabase has already discarded this device's tokens
+   * locally by the time it answers, so a failed request cannot restore the
+   * session, and leaving the UI populated would show the user their data while
+   * the app is in fact signed out. Failing closed is the only honest outcome.
+   *
+   * The caller is responsible for navigating away with a full page load, so
+   * that `getServerSideProps` re-evaluates the (now absent) session and the
+   * protected app cannot be reached client-side.
+   */
   const signOut = useCallback(async () => {
-    await signOutRequest();
-    if (!mounted.current) return;
+    let failure: DataError | null = null;
+    try {
+      const result = await signOutRequest();
+      if (!result.ok) failure = result.error;
+    } catch (caught) {
+      failure = toDataError(caught, "Could not sign out.");
+    }
+
+    if (!mounted.current) return failure;
     clearSession();
     setUser(null);
     setStatus("unauthenticated");
+    // Re-arming the bootstrap gate means a subsequent sign-in in this same
+    // document re-reads the profile and workspace instead of trusting values
+    // left over from the previous session.
+    setBootstrapped(false);
+    return failure;
   }, [clearSession]);
 
   const value = useMemo<AuthContextValue>(

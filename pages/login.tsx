@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/router";
 import Head from "next/head";
+import type { GetServerSideProps } from "next";
 import {
   AuthError,
   AuthForm,
@@ -16,7 +17,7 @@ import { AuthNotice } from "@/components/auth/AuthShell";
 
 export default function LoginPage() {
   const router = useRouter();
-  const ready = useAuthPageReady();
+  const { ready, signedIn } = useAuthPageReady();
   useApplyTheme();
 
   const [email, setEmail] = useState("");
@@ -28,12 +29,14 @@ export default function LoginPage() {
   const justRegistered = router.query.registered === "1";
 
   // Already signed in? Skip the form entirely.
+  //
+  // `getServerSideProps` below normally handles this before any HTML is sent,
+  // so this is the client-side fallback for a session that appeared (or was
+  // restored) after the page had already loaded.
   useEffect(() => {
-    void (async () => {
-      const state = await getAuthState();
-      if (state.user) void router.replace("/");
-    })();
-  }, [router]);
+    if (!signedIn) return;
+    void router.replace("/");
+  }, [router, signedIn]);
 
   // Prefill the address the user just registered with. Routing this through the
   // query string (rather than local state) means it survives a refresh.
@@ -59,7 +62,10 @@ export default function LoginPage() {
     void router.replace("/");
   };
 
-  if (!ready) return null;
+  // Nothing is rendered until the session check has actually completed, so the
+  // login form is never painted for a user who is already signed in. A failed
+  // check still reveals the form, so a network problem cannot lock anyone out.
+  if (!ready || signedIn) return null;
 
   return (
     <>
@@ -117,3 +123,32 @@ export default function LoginPage() {
     </>
   );
 }
+
+/**
+ * Redirects a visitor who already has a valid session.
+ *
+ * Without this the login page can only discover the session from the browser,
+ * which means the form is rendered and then taken away - a visible flash for
+ * every returning user (requirement 4). Resolving it here means a signed-in
+ * visitor is redirected before any HTML is sent, so the form is never painted
+ * for them.
+ *
+ * `getUser()` revalidates the JWT with the auth server rather than trusting the
+ * cookie, so a stale cookie cannot let someone in. The pages that redirect here
+ * are public pages, so a failure simply falls through to rendering the form.
+ */
+export const getServerSideProps: GetServerSideProps = async (context) => {
+  const { getServerSession, buildRedirect } = await import("@/lib/auth/server");
+
+  const session = await getServerSession(context);
+  if (session) {
+    // `next` lets a deep link win, so a user following /login?next=/grocery
+    // lands where they intended rather than always at the root.
+    const next = typeof context.query.next === "string" && context.query.next.startsWith("/")
+      ? context.query.next
+      : "/";
+    return buildRedirect(next);
+  }
+
+  return { props: {} };
+};

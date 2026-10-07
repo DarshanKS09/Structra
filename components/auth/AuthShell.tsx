@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import Head from "next/head";
 import Link from "next/link";
+import { getAuthState } from "@/lib/auth/client";
 
 /**
  * Shared chrome for the authentication screens.
@@ -115,8 +116,84 @@ export function AuthLink({ href, children }: { href: string; children: ReactNode
   );
 }
 
-export function useAuthPageReady() {
-  const [ready, setReady] = useState(false);
-  useEffect(() => setReady(true), []);
-  return ready;
+/**
+ * Gate for the unauthenticated pages.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS NOT JUST A `mounted` FLAG
+ * ---------------------------------------------------------------------------
+ * The previous implementation was `useEffect(() => setReady(true), [])`, which
+ * only reports that the component hydrated. It says nothing about whether a
+ * session exists, so the login form was rendered on that basis alone - meaning
+ * a returning user with a valid session was shown the form and *then* bounced,
+ * which is exactly the flash requirement 4 rules out.
+ *
+ * This hook reports three distinct states instead of a single boolean:
+ *
+ *   ready=false       the session lookup is in flight - render nothing
+ *   ready=true        no session, so this form is the correct screen
+ *   signedIn=true     a session exists - redirect, and keep rendering nothing
+ *
+ * `getServerSideProps` on the login page answers the same question before any
+ * HTML is sent, so a signed-in visitor never receives the form at all. The
+ * browser check remains as a second line of defence, because a session can
+ * appear or expire while the page is open; treating `signedIn` as "not ready"
+ * closes the flash window in that case too.
+ */
+/** How many times to retry when the session check could not complete. */
+const AUTH_CHECK_ATTEMPTS = 2;
+/** Base delay between retries; grows linearly with the attempt number. */
+const AUTH_CHECK_RETRY_MS = 250;
+
+export function useAuthPageReady(): { ready: boolean; signedIn: boolean } {
+  const [state, setState] = useState<{ ready: boolean; signedIn: boolean }>({
+    ready: false,
+    signedIn: false
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    void (async () => {
+      // "unknown" means the check could not complete - offline, blocked
+      // request. That is NOT a confirmed sign-out, so it must not immediately
+      // reveal the form. It is retried a few times, which covers the ordinary
+      // case of a device waking up or a tunnel reconnecting.
+      for (let attempt = 0; attempt <= AUTH_CHECK_ATTEMPTS; attempt += 1) {
+        if (cancelled) return;
+
+        const authState = await getAuthState();
+        if (cancelled) return;
+
+        if (authState.status !== "unknown") {
+          setState({
+            ready: true,
+            signedIn: authState.status === "authenticated"
+          });
+          return;
+        }
+
+        if (attempt === AUTH_CHECK_ATTEMPTS) break;
+        await new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, AUTH_CHECK_RETRY_MS * (attempt + 1));
+        });
+      }
+
+      if (cancelled) return;
+
+      // Still undetermined after every retry: the user is genuinely offline.
+      // Showing the form is the lesser failure - they can still attempt to sign
+      // in, and that attempt will surface a real network error, whereas a
+      // permanently blank page looks like a broken app.
+      setState({ ready: true, signedIn: false });
+    })();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  return state;
 }
