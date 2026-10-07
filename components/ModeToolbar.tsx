@@ -12,7 +12,7 @@ type Props = {
     all: number;
     active: number;
     completed: number;
-  };
+  } | null;
 };
 
 export function ModeToolbar({
@@ -60,7 +60,8 @@ export function ModeToolbar({
                 : "border border-white/20 text-slate-200 light:border-slate-300 light:text-slate-700"
             }`}
           >
-            {option} <span className="text-[10px]">({counts[option]})</span>
+            {option}
+            {counts ? <span className="text-[10px]">({counts[option]})</span> : null}
           </button>
         ))}
       </div>
