@@ -1,5 +1,5 @@
 import { db } from "@/lib/data/client";
-import { toDataError, DataError } from "@/lib/data/errors";
+import { DataError } from "@/lib/data/errors";
 
 /**
  * Profile photo uploads.
@@ -7,24 +7,33 @@ import { toDataError, DataError } from "@/lib/data/errors";
  * ---------------------------------------------------------------------------
  * WHY STORAGE RATHER THAN THE profiles TABLE
  * ---------------------------------------------------------------------------
- * `profiles.avatar_url` is a text column that is selected in every query that
- * reads a profile, including the workspace member roster. Inlining an uploaded
- * photo there as a data URI would put hundreds of kilobytes per user into each
- * of those responses, so the image is uploaded to Storage and only its URL is
- * stored.
+ * `profiles.avatar_url` is a text column selected by every query that reads a
+ * profile, including the workspace member roster. Inlining a photo there as a
+ * data URI would put hundreds of kilobytes per user into each of those
+ * responses, so the image is uploaded to Storage and only its URL is stored.
  *
  * ---------------------------------------------------------------------------
- * HOW THE USER IS SCOPED
+ * HOW THE UPLOAD IS AUTHORISED
  * ---------------------------------------------------------------------------
- * The object path is `<user_id>/avatar.<ext>`, built here from the id the caller
- * passes in. That is a convenience for producing a tidy path, NOT the security
- * boundary: the database's storage policies re-derive ownership from
- * `auth.uid()` and the path prefix, so a caller who forged a different user id
- * would be rejected by RLS rather than being trusted. The service-role key is
- * never used and is not available on the client.
+ * The bytes go from the browser straight to Storage - they never pass through
+ * the Next.js app - using a short-lived signed upload URL minted by
+ * `/api/profile/avatar/upload-url`. That route revalidates the caller's Supabase
+ * session and builds the object path from the verified user id, so a client
+ * cannot write into another user's folder. The service-role key stays on the
+ * server: the browser only ever receives a scoped, short-lived token.
  *
- * Re-uploading overwrites the same object, so replacing a photo cannot orphan
- * the previous file.
+ * The alternative - `storage.upload` straight from the browser with the user's
+ * own JWT - is governed by the `storage.objects` RLS policies shipped in
+ * `supabase/migrations/20250101001200_profile_avatars.sql`. Once those are
+ * applied this module can go back to calling `storage.upload` directly; the
+ * bucket, path layout and validation rules are unchanged.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY ONE OBJECT PER USER
+ * ---------------------------------------------------------------------------
+ * The path is always `<user_id>/avatar.<ext>`, so re-uploading replaces the
+ * previous photo instead of accumulating orphans. Switching format leaves the
+ * old object behind, which is why the cleanup step below removes any sibling.
  */
 
 const BUCKET = "avatars";
@@ -55,48 +64,6 @@ const EXTENSION_BY_TYPE: Record<string, string> = {
 };
 
 /**
- * Turns a Storage API failure into something a user can act on.
- *
- * The case worth special-casing is a missing RLS policy: writes are scoped by
- * the policies in `20250101001200_profile_avatars.sql`, and if they have not
- * been applied the API answers "new row violates row-level security policy".
- * That is accurate but useless to a user, so it is translated into a message
- * that names the actual remedy.
- */
-const toStorageError = (error: { message?: string } | null, fallback: string): DataError => {
-  const message = error?.message ?? "";
-
-  if (/row-level security|row level security/i.test(message)) {
-    // The user-facing message stays non-technical, but the developer running
-    // the deployment needs to know exactly which file to apply.
-    if (typeof console !== "undefined") {
-      console.warn(
-        "[structra] Avatar upload was refused by Row Level Security. The storage " +
-          "policies in supabase/migrations/20250101001200_profile_avatars.sql " +
-          "must be applied to this project (dashboard SQL editor, or `supabase db push`). " +
-          "The bucket itself may already exist; it is the policies on storage.objects " +
-          "that are missing. Underlying error:",
-        message
-      );
-    }
-    return new DataError(
-      "DATABASE",
-      "Photo uploads are not enabled yet on this deployment. Please try again later."
-    );
-  }
-  if (/exceeded the maximum allowed size/i.test(message)) {
-    return new DataError("VALIDATION", "That image is too large. Please pick one under 2 MB.");
-  }
-  if (/mime type .* is not supported/i.test(message)) {
-    return new DataError("VALIDATION", "Images only: JPEG, PNG, WebP or GIF.");
-  }
-  if (/exceeded the maximum allowed files|quota/i.test(message)) {
-    return new DataError("DATABASE", "There is no storage space left for another photo.");
-  }
-  return toDataError(error, fallback);
-};
-
-/**
  * Validates a picked file before anything is uploaded.
  *
  * A rejected file costs nothing and produces a message the user can act on,
@@ -121,16 +88,7 @@ export const validateAvatarFile = (file: File): { ok: true } | { ok: false; mess
   return { ok: true };
 };
 
-/**
- * The object path for a user's avatar.
- *
- * The user id is validated rather than interpolated blindly. In practice it is a
- * UUID taken from the authenticated session, so it can never contain a slash -
- * but this is the one place where a caller-supplied string becomes a storage
- * path, and a `../` reaching it would let an upload be addressed outside the
- * user's own folder. Rejecting it here is cheap; relying on that never happening
- * is not. The database policies remain the actual boundary.
- */
+/** The object path for a user's avatar, given the verified user id. */
 export const avatarPath = (userId: string, mimeType: string): string => {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(userId) || userId === "." || userId === "..") {
     throw new DataError("VALIDATION", "Could not determine the account for this upload.");
@@ -139,44 +97,98 @@ export const avatarPath = (userId: string, mimeType: string): string => {
   return `${userId}/avatar.${extension}`;
 };
 
+/** Turns a fetch failure into something a user can act on. */
+const requestError = (cause: unknown): DataError => {
+  const detail = cause instanceof Error ? cause.message : String(cause ?? "");
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED|network/i.test(detail)) {
+    return new DataError("NETWORK", "Could not reach the server. Please check your connection.");
+  }
+  return new DataError("NETWORK", "Could not upload that photo. Please try again.");
+};
+
+type UploadTicket = { path: string; token: string; signedUrl: string };
+
+/** Asks the server for a scoped, short-lived upload URL. */
+const requestUploadTicket = async (file: File): Promise<UploadTicket> => {
+  let response: Response;
+  try {
+    response = await fetch("/api/profile/avatar/upload-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contentType: file.type.toLowerCase().trim(), size: file.size })
+    });
+  } catch (caught) {
+    throw requestError(caught);
+  }
+
+  if (!response.ok) {
+    let message = "Could not upload that photo. Please try again.";
+    try {
+      const body = (await response.json()) as { error?: string };
+      if (body?.error) message = body.error;
+    } catch {
+      // A non-JSON error body is not worth reporting verbatim.
+    }
+    throw new DataError(response.status === 401 ? "UNAUTHENTICATED" : "DATABASE", message);
+  }
+
+  const body = (await response.json()) as Partial<UploadTicket>;
+  if (!body?.token || !body.path) {
+    throw new DataError("DATABASE", "The upload could not be prepared. Please try again.");
+  }
+  return { path: body.path, token: body.token, signedUrl: body.signedUrl ?? "" };
+};
+
 /**
  * Uploads a photo and returns the URL to persist in `profiles.avatar_url`.
  *
- * The previous file is removed first when it lived in this bucket, so switching
- * between formats does not leave the previous object behind.
+ * Re-uploading overwrites the same object, so replacing a photo cannot orphan
+ * the previous file.
  */
 export const uploadAvatar = async (userId: string, file: File): Promise<string> => {
   const check = validateAvatarFile(file);
   if (!check.ok) throw new DataError("VALIDATION", check.message);
 
-  const client = db();
-  const storage = client.storage.from(BUCKET);
-  const path = avatarPath(userId, file.type.toLowerCase().trim());
+  const mimeType = file.type.toLowerCase().trim();
 
-  // Best-effort cleanup of a differently-typed previous upload. Failure here is
-  // not worth surfacing: the new upload is what the user asked for.
-  const { data: existing } = await storage.list(userId, { limit: 100 });
-  const stale = (existing ?? []).map((entry) => entry.name).filter((name) => name !== path);
-  if (stale.length > 0) {
-    await storage.remove(stale).catch(() => undefined);
-  }
+  // `userId` is only used for the cleanup check below; the authoritative path
+  // comes back from the server, which derives it from the verified session.
+  const expectedPath = avatarPath(userId, mimeType);
+  const ticket = await requestUploadTicket(file);
 
-  const { error } = await storage.upload(path, file, {
+  const storage = db().storage.from(BUCKET);
+
+  const { error } = await storage.uploadToSignedUrl(ticket.path, ticket.token, file, {
     cacheControl: "3600",
-    // The content type must be repeated: the browser does not always preserve
-    // it, and Storage would otherwise serve the file as application/octet-stream.
-    contentType: file.type,
+    // Repeated because the browser does not always preserve the type, and
+    // Storage would otherwise serve the object as application/octet-stream.
+    contentType: mimeType,
     upsert: true
   });
-  if (error) throw toStorageError(error, "Could not upload that photo. Please try again.");
+  if (error) throw new DataError("DATABASE", "Could not upload that photo. Please try again.");
 
-  const { data } = storage.getPublicUrl(path);
-  const url = data.publicUrl;
-  if (!url) throw new DataError("DATABASE", "The photo was uploaded but could not be addressed.");
-  return url;
+  // Any previous upload in a different format was already removed by the
+  // server while minting the ticket, so there is nothing left to tidy here -
+  // and the browser could not list or delete objects in any case.
+
+  const { data } = storage.getPublicUrl(ticket.path);
+  if (!data.publicUrl) {
+    throw new DataError("DATABASE", "The photo was uploaded but could not be addressed.");
+  }
+  return data.publicUrl;
 };
 
-/** Deletes a user's uploaded avatar, ignoring anything that is not one of ours. */
+/** True when a stored URL points at a file this app manages in the avatars bucket. */
+export const isManagedAvatar = (url: string): boolean =>
+  /^https:\/\//i.test(url) && url.includes(`/${BUCKET}/`);
+
+/**
+ * Deletes a user's uploaded avatar.
+ *
+ * Runs on the server so it works whether or not the `storage.objects` delete
+ * policies have been applied, and so the client never needs elevated rights.
+ * Anything that is not one of our objects is ignored.
+ */
 export const deleteAvatar = async (userId: string, storedUrl: string | null | undefined): Promise<void> => {
   const url = storedUrl?.trim();
   if (!url || !isManagedAvatar(url)) return;
@@ -188,12 +200,17 @@ export const deleteAvatar = async (userId: string, storedUrl: string | null | un
   if (at < 0) return;
 
   const path = decodeURIComponent(url.slice(at + marker.length));
-  // Defensive: never delete outside this user's own folder.
+  // Defensive: never touch another user's folder.
   if (!path.startsWith(`${userId}/`)) return;
 
-  await db().storage.from(BUCKET).remove([path]).catch(() => undefined);
+  try {
+    await fetch("/api/profile/avatar/upload-url", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path })
+    });
+  } catch {
+    // Best-effort. A leftover object is inert: the profile no longer points at
+    // it, and the next upload overwrites the same path.
+  }
 };
-
-/** True when a stored URL points at a file this app manages in the avatars bucket. */
-export const isManagedAvatar = (url: string): boolean =>
-  /^https:\/\//i.test(url) && url.includes(`/${BUCKET}/`);

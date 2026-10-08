@@ -15,17 +15,20 @@ import { ShoppingList } from "@/components/ShoppingList";
 import { StudyList } from "@/components/StudyList";
 import { TaskList } from "@/components/TaskList";
 import { LocalDataImport } from "@/components/LocalDataImport";
-import { ProfileMenu } from "@/components/ProfileMenu";
 import { AuthProvider, useAuth } from "@/lib/auth/AuthProvider";
+import { useDashboard } from "@/lib/hooks/useDashboard";
 import { useModeItems } from "@/lib/hooks/useModeItems";
+import { Dashboard } from "@/components/Dashboard";
+import { NavBar } from "@/components/NavBar";
+import { QuickAdd } from "@/components/QuickAdd";
+import { completeItem } from "@/lib/dashboard/complete";
 import { setTheme as persistTheme } from "@/lib/data/account";
 import type { ProfileRow, UserSettingsRow, WorkspaceWithRole } from "@/lib/data/types";
 import { type ThemeVariant, useTaskStore } from "@/store/useTaskStore";
 import {
   type DraftByMode,
   type ListItem,
-  type ListMode,
-  modeLabels
+  type ListMode
 } from "@/types/taskTypes";
 
 type HomePageProps = {
@@ -75,13 +78,12 @@ export default function HomePage({
 function HomeContent() {
   const [mounted, setMounted] = useState(false);
   const [themePulseId, setThemePulseId] = useState(0);
-  const [isMobileModeMenuOpen, setIsMobileModeMenuOpen] = useState(false);
 
-  const { status, user, workspace, bootstrapping, error: authError, signOut } = useAuth();
+  const { status, user, profile, workspace, bootstrapping, error: authError, signOut } = useAuth();
 
   const {
-    selectedMode,
-    setMode,
+    view,
+    setView,
     isAddModalOpen,
     openAddModal,
     closeAddModal,
@@ -94,6 +96,14 @@ function HomeContent() {
     theme,
     setTheme
   } = useTaskStore();
+
+  // The Dashboard is the landing screen, so it is not a `ListMode`. It renders
+  // from `useDashboard`, which reads the same tables through the same data
+  // layer; the section hook is only engaged when a real section is on screen.
+  const selectedMode: ListMode | null =
+    view === "dashboard" || view === "modes" ? null : view;
+
+  const dashboard = useDashboard();
 
   const modeItems = useModeItems(
     selectedMode ?? "task",
@@ -147,9 +157,16 @@ function HomeContent() {
       // shape the hook expects without changing the modal's own contract.
       const item = draftToItem(mode, draft) as ListItem;
       const result = await create(item);
-      if (result.ok) closeAddModal();
+      if (result.ok) {
+        closeAddModal();
+        // A Dashboard quick-add creates a row in another mode's table, so the
+        // Dashboard is re-read to pick it up immediately.
+        if (mode !== selectedMode) void dashboard.reload();
+      }
+      // Returning the outcome lets the quick-add flow close its own modal.
+      return result.ok;
     },
-    [create, closeAddModal]
+    [create, closeAddModal, selectedMode, dashboard]
   );
 
   const handleUpdateItem = useCallback(
@@ -165,6 +182,49 @@ function HomeContent() {
 
   const handleToggle = useCallback((id: string) => void toggle(id), [toggle]);
   const handleDelete = useCallback((id: string) => void remove(id), [remove]);
+
+  /**
+   * Quick-add target.
+   *
+   * `null` means the picker is closed. The modal and the create call are the
+   * existing ones, so a Dashboard-created item is written by exactly the same
+   * path as one created inside its section.
+   */
+  const [quickAddMode, setQuickAddMode] = useState<ListMode | null>(null);
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+
+  const greeting = useMemo(() => {
+    const name = profile?.display_name?.trim();
+    if (name) return `Welcome back, ${name.split(/\s+/)[0]}`;
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good morning";
+    if (hour < 18) return "Good afternoon";
+    return "Good evening";
+  }, [profile?.display_name]);
+
+  /**
+   * Completes an item from the Dashboard.
+   *
+   * The write goes through `completeItem`, which dispatches to the same
+   * data-layer function the section screen uses. The Dashboard then re-reads
+   * from Supabase, so counts and ordering reflect the database rather than a
+   * local guess.
+   */
+  const handleDashboardComplete = useCallback(
+    async (entry: { item: { id: string }; mode: ListMode }) => {
+      if (!workspace || !user) return;
+      await dashboard.complete(entry.mode, entry.item.id, async () =>
+        completeItem({
+          mode: entry.mode,
+          itemId: entry.item.id,
+          workspaceId: workspace.id,
+          userId: user.id,
+          done: true
+        })
+      );
+    },
+    [workspace, user, dashboard]
+  );
 
   if (!mounted) return null;
 
@@ -244,14 +304,78 @@ function HomeContent() {
         <LocalDataImport />
 
         <AnimatePresence mode="wait">
-          {!selectedMode ? (
+          {view === "dashboard" ? (
+            <motion.div
+              key="dashboard"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-4 px-4 pb-8 pt-6 md:px-8"
+            >
+              <NavBar
+                view={view}
+                onNavigate={setView}
+                themeLabel={themeMeta[theme].short}
+                themeClassName={themeMeta[theme].className}
+                onCycleTheme={cycleTheme}
+              />
+              <Dashboard
+                sections={dashboard.sections}
+                priority={dashboard.priority}
+                totals={dashboard.totals}
+                greeting={greeting}
+                onComplete={(entry) => void handleDashboardComplete(entry)}
+                onOpenSection={(mode) => setView(mode)}
+                isRefreshing={dashboard.status === "loading"}
+              />
+              {dashboard.error ? (
+                <div
+                  role="alert"
+                  className="rounded-2xl border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200 light:text-rose-700"
+                >
+                  <p>{dashboard.error.message}</p>
+                  <button
+                    type="button"
+                    onClick={() => void dashboard.reload()}
+                    className="mt-1 text-xs underline underline-offset-2"
+                  >
+                    Try again
+                  </button>
+                </div>
+              ) : null}
+              {/* Quick add: choose a section, reuse the existing modal and the
+                  existing create path, so the row lands in the right table and
+                  the Dashboard picks it up on its next read. */}
+              <FloatingAddButton onClick={openAddModal} inline />
+              <QuickAdd
+                open={quickAddOpen}
+                onPick={(mode) => {
+                  setQuickAddOpen(false);
+                  setQuickAddMode(mode);
+                }}
+                onClose={() => setQuickAddOpen(false)}
+              />
+              {quickAddMode ? (
+                <AddItemModal
+                  mode={quickAddMode}
+                  isOpen={Boolean(quickAddMode)}
+                  onClose={() => setQuickAddMode(null)}
+                  onSubmit={async (mode, draft) => {
+                    const created = await handleAddItem(mode, draft);
+                    if (created) setQuickAddMode(null);
+                  }}
+                  onUpdate={handleUpdateItem}
+                />
+              ) : null}
+            </motion.div>
+          ) : !selectedMode ? (
             <motion.div
               key="selector"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0, y: -10 }}
             >
-              <ModeSelector onSelect={setMode} />
+              <ModeSelector onSelect={(mode) => setView(mode)} />
             </motion.div>
           ) : (
             <motion.section
@@ -261,111 +385,15 @@ function HomeContent() {
               exit={{ opacity: 0, x: -16 }}
               className="space-y-4 px-4 pb-8 pt-6 md:px-8"
             >
-              <header className="hidden items-center justify-between md:flex">
-                <button
-                  type="button"
-                  onClick={() => setMode(null)}
-                  className="rounded-xl border border-white/20 px-4 py-2 text-sm light:border-slate-300"
-                >
-                  All Modes
-                </button>
-                <div className="text-sm font-medium text-slate-300 light:text-slate-600">
-                  {modeLabels[selectedMode]}
-                </div>
-                <div className="flex items-center gap-2">
-                  <ProfileMenu />
-                  <motion.button
-                    type="button"
-                    onClick={cycleTheme}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.93 }}
-                    className={`h-10 w-10 rounded-full text-xs font-semibold ${themeMeta[theme].className}`}
-                    title="Change Theme"
-                  >
-                    {themeMeta[theme].short}
-                  </motion.button>
-                </div>
-              </header>
-
-              <div className="hidden gap-2 overflow-x-auto pb-1 md:flex">
-                {(Object.keys(modeLabels) as ListMode[]).map((mode) => (
-                  <motion.button
-                    key={mode}
-                    type="button"
-                    onClick={() => setMode(mode)}
-                    whileHover={{ y: -2 }}
-                    whileTap={{ scale: 0.98 }}
-                    className={`h-10 rounded-xl px-3 text-sm ${
-                      selectedMode === mode
-                        ? "themed-accent-solid font-semibold"
-                        : "border border-white/20 transition hover:border-white/40 hover:bg-white/10 light:border-slate-300"
-                    }`}
-                  >
-                    {modeLabels[mode]}
-                  </motion.button>
-                ))}
-              </div>
-
-              <div className="md:hidden">
-                <div className="flex items-center justify-between">
-                  <div className="relative">
-                    <motion.button
-                      type="button"
-                      onClick={() => setIsMobileModeMenuOpen((prev) => !prev)}
-                      whileTap={{ scale: 0.97 }}
-                      className="flex h-11 w-14 items-center justify-center rounded-xl border border-white/20 bg-white/10"
-                      aria-label="Open mode menu"
-                    >
-                      <span className="space-y-1">
-                        <span className="block h-0.5 w-4 rounded-full bg-slate-200" />
-                        <span className="block h-0.5 w-4 rounded-full bg-slate-200" />
-                        <span className="block h-0.5 w-4 rounded-full bg-slate-200" />
-                      </span>
-                    </motion.button>
-                    <AnimatePresence>
-                      {isMobileModeMenuOpen && (
-                        <motion.div
-                          initial={{ opacity: 0, y: -6 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -6 }}
-                          transition={{ duration: 0.15 }}
-                          className="absolute left-0 top-12 z-30 w-52 rounded-xl border border-white/20 bg-slate-900/95 p-1.5 backdrop-blur-xl"
-                        >
-                          {(Object.keys(modeLabels) as ListMode[]).map((mode) => (
-                            <button
-                              key={mode}
-                              type="button"
-                              onClick={() => {
-                                setMode(mode);
-                                setIsMobileModeMenuOpen(false);
-                              }}
-                              className={`mb-1 block h-9 w-full rounded-lg px-2 text-left text-xs ${
-                                selectedMode === mode
-                                  ? "themed-accent-solid font-semibold"
-                                  : "text-slate-200 hover:bg-white/10"
-                              }`}
-                            >
-                              {modeLabels[mode]}
-                            </button>
-                          ))}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <ProfileMenu />
-                    <motion.button
-                      type="button"
-                      onClick={cycleTheme}
-                      whileTap={{ scale: 0.92 }}
-                      className={`h-11 w-11 rounded-full text-xs font-semibold ${themeMeta[theme].className}`}
-                      title="Change Theme"
-                    >
-                      {themeMeta[theme].short}
-                    </motion.button>
-                  </div>
-                </div>
-              </div>
+              {/* Navigation is the same component the Dashboard uses, so the
+                  Dashboard is always the first item in both layouts. */}
+              <NavBar
+                view={view}
+                onNavigate={setView}
+                themeLabel={themeMeta[theme].short}
+                themeClassName={themeMeta[theme].className}
+                onCycleTheme={cycleTheme}
+              />
 
               <ModeToolbar
                 mode={selectedMode}

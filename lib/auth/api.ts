@@ -49,6 +49,19 @@ export const readString = (body: unknown, field: string): string => {
 };
 
 /**
+ * A numeric body field, or null when absent/not numeric.
+ *
+ * Used where the value is a hint rather than the authority (for example a file
+ * size, which the destination also enforces).
+ */
+export const readNumber = (body: unknown, field: string): number | null => {
+  if (typeof body !== "object" || body === null) return null;
+  const value = (body as Record<string, unknown>)[field];
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value;
+};
+
+/**
  * Maximum accepted request body for the registration routes.
  *
  * A registration body is a handful of short fields, so anything large is
