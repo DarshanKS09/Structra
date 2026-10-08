@@ -5,6 +5,15 @@ import { useMemo } from "react";
 import { modeLabels, type ListMode } from "@/types/taskTypes";
 import type { DashboardItem } from "@/lib/dashboard/prioritize";
 import type { DashboardSectionView } from "@/lib/hooks/useDashboard";
+import type { TaskAnalytics } from "@/lib/data/analytics";
+import type { StudyAnalytics } from "@/lib/data/studyAnalytics";
+import type { ReminderRow } from "@/lib/data/reminders";
+import {
+  TaskProgressCard,
+  StudyProgressCard,
+  GrocerySummaryCard,
+  ReminderCard
+} from "@/components/analytics/AnalyticsCards";
 
 /**
  * The Dashboard.
@@ -170,6 +179,12 @@ type Props = {
   onComplete: (entry: DashboardItem) => void;
   onOpenSection: (mode: ListMode) => void;
   isRefreshing: boolean;
+  /** Analytics readouts. Null when that read failed, so the card is omitted. */
+  taskAnalytics: TaskAnalytics | null;
+  studyAnalytics: StudyAnalytics | null;
+  dueReminders: ReminderRow[];
+  groceryHistoryCount: number;
+  onDismissReminder: (taskId: string) => void;
 };
 
 export function Dashboard({
@@ -179,7 +194,12 @@ export function Dashboard({
   greeting,
   onComplete,
   onOpenSection,
-  isRefreshing
+  isRefreshing,
+  taskAnalytics,
+  studyAnalytics,
+  dueReminders,
+  groceryHistoryCount,
+  onDismissReminder
 }: Props) {
   // Sections are split so the ones the user has not used do not crowd out the
   // ones holding real work.
@@ -203,6 +223,11 @@ export function Dashboard({
   // the full set is always reachable in the section itself.
   const upNext = priority.upNext.slice(0, 6);
   const doFirst = priority.doFirst.slice(0, 8);
+
+  // The grocery card needs "how many are still to buy", which is the grocery
+  // section's pending count - not the workspace total of every grocery row.
+  const activeGroceryCount =
+    sections.find((section) => section.mode === "grocery")?.pending.length ?? 0;
 
   return (
     <div className="space-y-4" aria-busy={isRefreshing}>
@@ -308,6 +333,29 @@ export function Dashboard({
           </p>
         ) : null}
       </Card>
+
+      {/*
+          Reminders sit ABOVE the analytics: a reminder is an action item, not a
+          statistic, and burying "you asked to be reminded about this" under
+          charts would defeat it.
+        */}
+      <ReminderCard reminders={dueReminders} onDismiss={onDismissReminder} />
+
+      {/*
+          Two compact cards, each answering one question and each linking to a
+          detailed view. They are deliberately NOT merged into the priority bands:
+          analytics describe the workload, while the bands tell the user what to
+          do next, and merging them would blur both.
+        */}
+      <div className="grid gap-4 md:grid-cols-2">
+        {taskAnalytics ? <TaskProgressCard analytics={taskAnalytics} /> : null}
+        {studyAnalytics ? <StudyProgressCard analytics={studyAnalytics} /> : null}
+      </div>
+
+      <GrocerySummaryCard
+        activeCount={activeGroceryCount}
+        historyCount={groceryHistoryCount}
+      />
 
       {/* --- by section -------------------------------------------------- */}
       {active.length > 0 ? (

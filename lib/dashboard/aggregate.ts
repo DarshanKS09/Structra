@@ -2,6 +2,10 @@ import { listTasks } from "@/lib/data/tasks";
 import { ensureDefaultGroceryList, listGroceryItems } from "@/lib/data/groceries";
 import { listNotes } from "@/lib/data/notes";
 import { listHabits } from "@/lib/data/habits";
+import { listGroceryHistory } from "@/lib/data/groceries";
+import { getTaskAnalytics, type TaskAnalytics } from "@/lib/data/analytics";
+import { getStudyAnalytics, type StudyAnalytics } from "@/lib/data/studyAnalytics";
+import { listDueReminders, type ReminderRow } from "@/lib/data/reminders";
 import { listStudySessions, listStudySubjects } from "@/lib/data/study";
 import { ensureRecordType, listRecords, BUILT_IN_RECORD_TYPES } from "@/lib/data/records";
 import {
@@ -65,6 +69,14 @@ export type DashboardSnapshot = {
   partial: boolean;
   /** Section modes that failed, so the UI can be honest about it. */
   failed: ListMode[];
+  /** Headline task metrics, derived from the same `tasks` rows as the section. */
+  taskAnalytics: TaskAnalytics | null;
+  /** Study time readout, scoped to the signed-in user. */
+  studyAnalytics: StudyAnalytics | null;
+  /** Reminders whose instant has passed and that have not been delivered. */
+  dueReminders: ReminderRow[];
+  /** How many finished grocery trips are kept as history. */
+  groceryHistoryCount: number;
 };
 
 /**
@@ -232,6 +244,14 @@ const loadSection = async (
  *
  * Sections are fetched in parallel because they are independent, and each one
  * is isolated so a single failure does not blank the rest.
+ *
+ * The analytics readouts ride along in the SAME batch rather than triggering a
+ * second round of queries. That matters: the Dashboard is the app's landing
+ * screen, so doubling its query count would be paid on every page load and every
+ * mode switch, for numbers derived from rows already being fetched.
+ *
+ * Each extra readout is separately guarded, so a missing analytics table (or an
+ * unapplied migration) degrades that card alone rather than the page.
  */
 export const loadDashboardSnapshot = async (
   workspaceId: string,
@@ -254,9 +274,21 @@ export const loadDashboardSnapshot = async (
     buckets
   }));
 
+  const [taskAnalytics, studyAnalytics, dueReminders, groceryHistoryCount] = await Promise.all([
+    getTaskAnalytics(workspaceId).catch(() => null),
+    getStudyAnalytics(workspaceId, userId).catch(() => null),
+    // Only the caller's own tasks can raise a reminder for them.
+    listDueReminders(workspaceId, { userId }).catch(() => [] as ReminderRow[]),
+    listGroceryHistory(workspaceId, 100).then((lists) => lists.length).catch(() => 0)
+  ]);
+
   return {
     sections,
     partial: results.some((r) => r.failed),
-    failed: results.filter((r) => r.failed).map((r) => r.mode)
+    failed: results.filter((r) => r.failed).map((r) => r.mode),
+    taskAnalytics,
+    studyAnalytics,
+    dueReminders,
+    groceryHistoryCount
   };
 };

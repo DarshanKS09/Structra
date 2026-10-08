@@ -64,18 +64,59 @@ export const ensureDefaultGroceryList = async (workspaceId: string): Promise<Gro
 };
 
 /**
+ * Whether `grocery_lists.completed_at` exists yet.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS PROBE EXISTS
+ * ---------------------------------------------------------------------------
+ * The column arrives with migration
+ * `20250101001300_reminders_and_grocery_history.sql`. Until that is applied,
+ * filtering on it makes PostgREST reject the whole query with
+ * `column grocery_lists.completed_at does not exist` - which would break the
+ * grocery section outright.
+ *
+ * Breaking a working feature to ship a new one is the wrong trade, so the probe
+ * detects the missing column once and the caller falls back to pre-migration
+ * behaviour. Once the migration is applied the cached answer flips and history
+ * starts separating automatically, with no code change and no second deploy.
+ *
+ * Cached for the lifetime of the tab: the schema cannot change under a running
+ * client, so re-probing on every load would be waste.
+ */
+let completedAtSupported: boolean | null = null;
+
+const supportsCompletedAt = async (): Promise<boolean> => {
+  if (completedAtSupported !== null) return completedAtSupported;
+  const { error } = await db()
+    .from("grocery_lists")
+    .select("id, completed_at")
+    .eq("workspace_id", "00000000-0000-0000-0000-000000000000")
+    .limit(1);
+  // A missing column is the only error that changes the answer. Anything else
+  // (RLS, network) means the column exists and this probe merely failed.
+  completedAtSupported = error
+    ? !/completed_at.*does not exist|column .*completed_at/i.test(error.message)
+    : true;
+  return completedAtSupported;
+};
+
+/**
  * Lists still being shopped, oldest first so the "current" one is stable.
  *
  * `.is("completed_at", null)` is what distinguishes an active list from a
  * preserved previous trip.
  */
 export const listActiveGroceryLists = async (workspaceId: string): Promise<GroceryListRow[]> => {
-  const { data, error } = await db()
+  const query = db()
     .from("grocery_lists")
     .select("*")
     .eq("workspace_id", workspaceId)
-    .is("completed_at", null)
     .order("created_at", { ascending: true });
+
+  // Pre-migration there is only ever one list, so no filter is needed.
+  if (await supportsCompletedAt()) query.is("completed_at", null);
+
+  const { data, error } = await query;
   if (error) throw toDataError(error, "Could not load your grocery lists.");
   return data ?? [];
 };
@@ -91,6 +132,10 @@ export const listGroceryHistory = async (
   workspaceId: string,
   limit = 50
 ): Promise<GroceryListRow[]> => {
+  // Pre-migration nothing can have been archived, so report an empty history
+  // rather than issuing a query that would fail.
+  if (!(await supportsCompletedAt())) return [];
+
   const { data, error } = await db()
     .from("grocery_lists")
     .select("*")
@@ -123,6 +168,15 @@ export const completeGroceryList = async (
   workspaceId: string,
   listId: string
 ): Promise<{ completedList: GroceryListRow; activeList: GroceryListRow }> => {
+  // Without the column there is nowhere to record the archive, so say so plainly
+  // rather than falling back to deleting the items - which is the exact behaviour
+  // this feature exists to remove.
+  if (!(await supportsCompletedAt())) {
+    throw validationError(
+      "Grocery history is unavailable until its database migration is applied."
+    );
+  }
+
   const { data, error } = await db()
     .from("grocery_lists")
     .update({ completed_at: new Date().toISOString() })

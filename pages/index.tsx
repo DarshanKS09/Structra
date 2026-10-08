@@ -22,6 +22,8 @@ import { Dashboard } from "@/components/Dashboard";
 import { NavBar } from "@/components/NavBar";
 import { QuickAdd } from "@/components/QuickAdd";
 import { completeItem } from "@/lib/dashboard/complete";
+import { completeGroceryList, ensureDefaultGroceryList } from "@/lib/data/groceries";
+import { toDataError } from "@/lib/data/errors";
 import { setTheme as persistTheme } from "@/lib/data/account";
 import type { ProfileRow, UserSettingsRow, WorkspaceWithRole } from "@/lib/data/types";
 import { type ThemeVariant, useTaskStore } from "@/store/useTaskStore";
@@ -192,6 +194,33 @@ function HomeContent() {
    */
   const [quickAddMode, setQuickAddMode] = useState<ListMode | null>(null);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [finishingGrocery, setFinishingGrocery] = useState(false);
+  const [groceryError, setGroceryError] = useState<string | null>(null);
+
+  /**
+   * Archives the current grocery trip.
+   *
+   * This is the destructive-looking action that is actually non-destructive: it
+   * stamps `completed_at` and starts a fresh list, leaving every purchased item
+   * intact for the history view. On success the section is re-read so the user
+   * sees the new empty list rather than the trip they just archived.
+   */
+  const handleFinishGroceryList = useCallback(async () => {
+    if (!workspace) return;
+    setFinishingGrocery(true);
+    setGroceryError(null);
+    try {
+      const active = await ensureDefaultGroceryList(workspace.id);
+      await completeGroceryList(workspace.id, active.id);
+      await reload();
+      // The Dashboard shows the history count, so it must be re-read too.
+      await dashboard.reload();
+    } catch (caught) {
+      setGroceryError(toDataError(caught, "Could not finish the grocery list.").message);
+    } finally {
+      setFinishingGrocery(false);
+    }
+  }, [workspace, reload, dashboard]);
 
   const greeting = useMemo(() => {
     const name = profile?.display_name?.trim();
@@ -327,6 +356,11 @@ function HomeContent() {
                 onComplete={(entry) => void handleDashboardComplete(entry)}
                 onOpenSection={(mode) => setView(mode)}
                 isRefreshing={dashboard.status === "loading"}
+                taskAnalytics={dashboard.taskAnalytics}
+                studyAnalytics={dashboard.studyAnalytics}
+                dueReminders={dashboard.dueReminders}
+                groceryHistoryCount={dashboard.groceryHistoryCount}
+                onDismissReminder={(taskId) => void dashboard.dismissReminder(taskId)}
               />
               {dashboard.error ? (
                 <div
@@ -406,6 +440,36 @@ function HomeContent() {
               />
 
               <FloatingAddButton onClick={openAddModal} inline />
+
+              {/*
+                  Grocery only. "Finish list" ARCHIVES the current trip rather
+                  than deleting the purchased items, which is what makes the
+                  history view possible. Previously there was no way to finish a
+                  list at all - the destructive clear function existed in the data
+                  layer but was never wired to a control - so this adds the
+                  affordance rather than changing an existing one.
+                */}
+              {selectedMode === "grocery" && items.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleFinishGroceryList()}
+                    disabled={finishingGrocery || !workspace}
+                    className="h-10 rounded-xl border border-emerald-400/40 px-3 text-xs font-medium text-emerald-200 transition hover:border-emerald-300 disabled:opacity-50 light:border-emerald-300 light:text-emerald-700"
+                  >
+                    {finishingGrocery ? "Finishing…" : "Finish list & keep as history"}
+                  </button>
+                  <span className="text-[11px] text-slate-400 light:text-slate-500">
+                    Items are kept, not deleted.
+                  </span>
+                </div>
+              ) : null}
+
+              {groceryError ? (
+                <p role="alert" className="text-xs text-rose-300 light:text-rose-700">
+                  {groceryError}
+                </p>
+              ) : null}
 
               {dataError ? (
                 <div

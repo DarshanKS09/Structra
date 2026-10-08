@@ -2,7 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth/AuthProvider";
-import { loadDashboardSnapshot, type DashboardSection } from "@/lib/dashboard/aggregate";
+import {
+  loadDashboardSnapshot,
+  type DashboardSection
+} from "@/lib/dashboard/aggregate";
 import {
   toDashboardItem,
   splitByPriority,
@@ -14,6 +17,9 @@ import {
 import { isItemCompleted } from "@/lib/data/adapters";
 import { toDataError, DataError, type DataErrorCode } from "@/lib/data/errors";
 import type { AsyncStatus } from "@/lib/data/types";
+import type { TaskAnalytics } from "@/lib/data/analytics";
+import type { StudyAnalytics } from "@/lib/data/studyAnalytics";
+import { markReminderSent, type ReminderRow } from "@/lib/data/reminders";
 import type { ListItem, ListMode } from "@/types/taskTypes";
 
 /**
@@ -59,6 +65,16 @@ export type DashboardState = {
   status: AsyncStatus;
   error: DataError | null;
   isInitialLoading: boolean;
+  /** Headline task metrics for the Task Progress card. */
+  taskAnalytics: TaskAnalytics | null;
+  /** Study readout for the Study card. */
+  studyAnalytics: StudyAnalytics | null;
+  /** Reminders that are due and not yet delivered. */
+  dueReminders: ReminderRow[];
+  /** How many finished grocery trips exist. */
+  groceryHistoryCount: number;
+  /** Acknowledges (hides) a delivered reminder. */
+  dismissReminder: (taskId: string) => Promise<void>;
   reload: () => Promise<void>;
   /**
    * Marks an item done: applied locally, then committed through `write`.
@@ -83,6 +99,10 @@ export function useDashboard(): DashboardState {
   const [status, setStatus] = useState<AsyncStatus>("idle");
   const [error, setError] = useState<DataError | null>(null);
   const [pendingWrites, setPendingWrites] = useState(0);
+  const [taskAnalytics, setTaskAnalytics] = useState<TaskAnalytics | null>(null);
+  const [studyAnalytics, setStudyAnalytics] = useState<StudyAnalytics | null>(null);
+  const [dueReminders, setDueReminders] = useState<ReminderRow[]>([]);
+  const [groceryHistoryCount, setGroceryHistoryCount] = useState(0);
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -103,6 +123,10 @@ export function useDashboard(): DashboardState {
       const snapshot = await loadDashboardSnapshot(workspaceId, userId);
       if (!mounted.current) return;
       setSections(snapshot.sections);
+      setTaskAnalytics(snapshot.taskAnalytics);
+      setStudyAnalytics(snapshot.studyAnalytics);
+      setDueReminders(snapshot.dueReminders);
+      setGroceryHistoryCount(snapshot.groceryHistoryCount);
       setError(
         snapshot.partial
           ? new DataError(
@@ -224,11 +248,45 @@ export function useDashboard(): DashboardState {
     [sections, load]
   );
 
+  /**
+   * Acknowledges a reminder.
+   *
+   * Writes `reminder_sent_at` so the reminder stops appearing - and, critically,
+   * stops being emailed by the scheduled sweep. Until this lands the row would
+   * keep reappearing on every Dashboard load, which is exactly the "duplicate
+   * reminders" failure.
+   */
+  const dismissReminder = useCallback(
+    async (taskId: string) => {
+      if (!workspaceId) return;
+      // Removed immediately: the user has already acted, so waiting for the
+      // write would leave a dismissed item on screen.
+      setDueReminders((current) => current.filter((row) => row.id !== taskId));
+      try {
+        await markReminderSent(workspaceId, taskId, new Date().toISOString());
+      } catch (caught) {
+        // Restore it so the user is not left believing it is dismissed when the
+        // database disagrees.
+        const snapshot = await loadDashboardSnapshot(workspaceId, userId ?? "").catch(
+          () => null
+        );
+        if (snapshot && mounted.current) setDueReminders(snapshot.dueReminders);
+        setError(toDataError(caught, "Could not dismiss that reminder."));
+      }
+    },
+    [workspaceId, userId]
+  );
+
   return {
     sections: views,
     priority,
     actionable,
     totals,
+    taskAnalytics,
+    studyAnalytics,
+    dueReminders,
+    groceryHistoryCount,
+    dismissReminder,
     status,
     error,
     isInitialLoading: status === "loading" && sections.length === 0,

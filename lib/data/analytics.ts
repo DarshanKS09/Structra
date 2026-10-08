@@ -124,11 +124,15 @@ export const getTaskAnalytics = async (
   const [total, completed, overdue, dueToday, dueThisWeek, noDeadline] = await Promise.all([
     headCount(countQuery(workspaceId)),
     headCount(countQuery(workspaceId).eq("status", "done")),
+    // Overdue compares against NOW, not against the end of the day. Using the
+    // day boundary would sweep in tasks that are merely due LATER today, which
+    // is the opposite of what "overdue" means.
+    //
     // The open-status filter is what makes a completed task incapable of
     // counting as overdue, rather than relying on every caller to remember to
     // exclude it.
     headCount(
-      countQuery(workspaceId).in("status", OPEN_STATUSES).not("due_at", "is", null).lt("due_at", today.end)
+      countQuery(workspaceId).in("status", OPEN_STATUSES).not("due_at", "is", null).lt("due_at", iso(now))
     ),
     headCount(
       countQuery(workspaceId)
@@ -137,6 +141,7 @@ export const getTaskAnalytics = async (
         .gte("due_at", today.start)
         .lt("due_at", today.end)
     ),
+    // The week AHEAD, starting after today so it does not overlap due-today.
     headCount(
       countQuery(workspaceId)
         .in("status", OPEN_STATUSES)

@@ -35,6 +35,13 @@ const MODE_ICONS: Record<ListMode, string> = {
   meeting: "✎"
 };
 
+/** Real pages that live alongside the section modes. */
+const EXTRA_PAGES: { href: string; label: string }[] = [
+  { href: "/analytics/tasks", label: "Task Analytics" },
+  { href: "/analytics/study", label: "Study Analytics" },
+  { href: "/grocery-history", label: "Grocery History" }
+];
+
 type NavBarProps = {
   view: AppView;
   onNavigate: (view: AppView) => void;
@@ -147,6 +154,23 @@ export function NavBar({
         >
           All Sections
         </motion.button>
+
+        {/*
+          Analytics are real pages, not modes, so they are ordinary links rather
+          than new members of the `ListMode` union. Keeping them separate means
+          adding a report never widens that union or touches a list component.
+        */}
+        {EXTRA_PAGES.map((page) => (
+          <motion.a
+            key={page.href}
+            href={page.href}
+            whileHover={{ y: -2 }}
+            whileTap={{ scale: 0.98 }}
+            className="flex h-10 items-center rounded-xl border border-white/20 px-3 text-sm transition hover:border-white/40 hover:bg-white/10 light:border-slate-300"
+          >
+            {page.label}
+          </motion.a>
+        ))}
       </nav>
 
       {/* --- mobile bar ---------------------------------------------------- */}

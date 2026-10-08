@@ -6,6 +6,7 @@ import { DonutChart } from "@/components/analytics/DonutChart";
 import { TrendBars, TrendLine } from "@/components/analytics/TrendCharts";
 import type { TaskAnalytics } from "@/lib/data/analytics";
 import type { StudyAnalytics } from "@/lib/data/studyAnalytics";
+import type { ReminderRow } from "@/lib/data/reminders";
 
 /**
  * The Dashboard's analytics cards.
@@ -243,12 +244,19 @@ export function GrocerySummaryCard({
   );
 }
 
-/** REMINDERS - tasks whose reminder instant has already passed. */
+/**
+ * REMINDERS - tasks whose reminder instant has already passed.
+ *
+ * This is the in-app delivery channel: the rows are read from the database on
+ * every Dashboard load, so a reminder survives refresh and logout/login with no
+ * client-side timer. It is honest about its limit - it surfaces while the app is
+ * open, and the emailed copy is dispatched by the scheduled server job.
+ */
 export function ReminderCard({
   reminders,
   onDismiss
 }: {
-  reminders: { id: string; title: string; dueAt: string | null; offsetMinutes: number | null }[];
+  reminders: ReminderRow[];
   onDismiss: (id: string) => void;
 }) {
   if (reminders.length === 0) return null;
@@ -269,7 +277,7 @@ export function ReminderCard({
           <li key={reminder.id} className="flex items-center gap-2 text-xs">
             <span className="min-w-0 flex-1 truncate">{reminder.title}</span>
             <span className="shrink-0 text-amber-300/90 light:text-amber-700">
-              {reminder.dueAt ? `due ${new Date(reminder.dueAt).toLocaleString()}` : ""}
+              {reminder.due_at ? `due ${new Date(reminder.due_at).toLocaleString()}` : ""}
             </span>
             <button
               type="button"
