@@ -49,11 +49,186 @@ export const createGroceryList = async (
 };
 
 /** Returns the user's default list, creating it if this is the first visit. */
+/**
+ * The ACTIVE grocery list, creating one on first use.
+ *
+ * Only lists with `completed_at IS NULL` qualify. A finished trip is history, not
+ * the current shop, so reusing one would put last week's purchases back on the
+ * shelf. The `name` match is a tiebreak within the active set only.
+ */
 export const ensureDefaultGroceryList = async (workspaceId: string): Promise<GroceryListRow> => {
-  const lists = await listGroceryLists(workspaceId);
-  const existing = lists.find((list) => list.name === DEFAULT_LIST_NAME) ?? lists[0];
+  const active = await listActiveGroceryLists(workspaceId);
+  const existing = active.find((list) => list.name === DEFAULT_LIST_NAME) ?? active[0];
   if (existing) return existing;
   return createGroceryList(workspaceId, DEFAULT_LIST_NAME);
+};
+
+/**
+ * Lists still being shopped, oldest first so the "current" one is stable.
+ *
+ * `.is("completed_at", null)` is what distinguishes an active list from a
+ * preserved previous trip.
+ */
+export const listActiveGroceryLists = async (workspaceId: string): Promise<GroceryListRow[]> => {
+  const { data, error } = await db()
+    .from("grocery_lists")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .is("completed_at", null)
+    .order("created_at", { ascending: true });
+  if (error) throw toDataError(error, "Could not load your grocery lists.");
+  return data ?? [];
+};
+
+/**
+ * Completed trips, newest first - the history view.
+ *
+ * The limit matters: PostgREST caps rows per request, so without it a long
+ * history would silently hide the most recent entries - exactly the wrong end to
+ * truncate.
+ */
+export const listGroceryHistory = async (
+  workspaceId: string,
+  limit = 50
+): Promise<GroceryListRow[]> => {
+  const { data, error } = await db()
+    .from("grocery_lists")
+    .select("*")
+    .eq("workspace_id", workspaceId)
+    .not("completed_at", "is", null)
+    .order("completed_at", { ascending: false })
+    .limit(limit);
+  if (error) throw toDataError(error, "Could not load your grocery history.");
+  return data ?? [];
+};
+
+/**
+ * Finishes the current trip, preserving it as history.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS DOES NOT DELETE ANYTHING
+ * ---------------------------------------------------------------------------
+ * The previous `clearCompletedGroceryItems` deleted every purchased row, which
+ * destroyed the shopping record every time a list was finished - there was no way
+ * back to "what did I buy last week".
+ *
+ * Marking the list complete preserves the list and its items with quantities and
+ * `completed` flags intact, and records when the trip happened. Nothing is lost,
+ * so history survives refresh, logout/login and being revisited months later.
+ *
+ * A fresh active list is created so the user is never left with nowhere to add
+ * the next shop.
+ */
+export const completeGroceryList = async (
+  workspaceId: string,
+  listId: string
+): Promise<{ completedList: GroceryListRow; activeList: GroceryListRow }> => {
+  const { data, error } = await db()
+    .from("grocery_lists")
+    .update({ completed_at: new Date().toISOString() })
+    .eq("workspace_id", workspaceId)
+    .eq("id", listId)
+    .is("completed_at", null) // never re-complete a historical trip
+    .select("*")
+    .single();
+
+  if (error) throw toDataError(error, "Could not finish the grocery list.");
+
+  const activeList = await ensureDefaultGroceryList(workspaceId);
+  return { completedList: data, activeList };
+};
+
+/**
+ * Copies a historical trip's outstanding items into the current list.
+ *
+ * Explicitly opt-in. Old items are never pushed back automatically, because doing
+ * so would silently resurrect a shop the user already finished.
+ *
+ * Only items that were still unpurchased are copied - those are the ones worth
+ * re-adding - and names already on the active list are skipped, so running this
+ * twice cannot double the list.
+ */
+export const copyGroceryListItems = async (
+  fromListId: string,
+  toListId: string
+): Promise<number> => {
+  if (fromListId === toListId) {
+    throw validationError("That list is already the current one.");
+  }
+
+  const [{ data: source, error: sourceError }, { data: existing, error: existingError }] =
+    await Promise.all([
+      db().from("grocery_items").select("*").eq("grocery_list_id", fromListId),
+      db().from("grocery_items").select("name").eq("grocery_list_id", toListId)
+    ]);
+  if (sourceError) throw toDataError(sourceError, "Could not read that list.");
+  if (existingError) throw toDataError(existingError, "Could not read the current list.");
+
+  const alreadyThere = new Set((existing ?? []).map((row) => row.name.trim().toLowerCase()));
+  const toInsert = (source ?? [])
+    .filter((row) => !row.completed)
+    .filter((row) => !alreadyThere.has(row.name.trim().toLowerCase()))
+    .map((row) => ({
+      grocery_list_id: toListId,
+      name: row.name,
+      quantity: row.quantity,
+      unit: row.unit,
+      completed: false,
+      notes: row.notes
+    }));
+
+  if (toInsert.length === 0) return 0;
+
+  const { error } = await db().from("grocery_items").insert(toInsert);
+  if (error) throw toDataError(error, "Could not copy those items.");
+  return toInsert.length;
+};
+
+/** A history entry plus its item counts, without loading every item row. */
+export type GroceryHistoryEntry = {
+  list: GroceryListRow;
+  itemCount: number;
+  /** Items bought on that trip. */
+  completedCount: number;
+};
+
+/**
+ * Previous trips with their counts, newest first.
+ *
+ * The counts come from ONE read of the items across all those lists, not one
+ * query per list - which would be an N+1 on exactly the screen a user opens to
+ * browse their history.
+ */
+export const getGroceryHistory = async (
+  workspaceId: string,
+  limit = 50
+): Promise<GroceryHistoryEntry[]> => {
+  const lists = await listGroceryHistory(workspaceId, limit);
+  if (lists.length === 0) return [];
+
+  const { data: items, error } = await db()
+    .from("grocery_items")
+    .select("grocery_list_id, completed")
+    .in(
+      "grocery_list_id",
+      lists.map((list) => list.id)
+    );
+
+  if (error) throw toDataError(error, "Could not load your grocery history.");
+
+  const counts = new Map<string, { itemCount: number; completedCount: number }>();
+  for (const row of items ?? []) {
+    const bucket = counts.get(row.grocery_list_id) ?? { itemCount: 0, completedCount: 0 };
+    bucket.itemCount += 1;
+    if (row.completed) bucket.completedCount += 1;
+    counts.set(row.grocery_list_id, bucket);
+  }
+
+  return lists.map((list) => ({
+    list,
+    itemCount: counts.get(list.id)?.itemCount ?? 0,
+    completedCount: counts.get(list.id)?.completedCount ?? 0
+  }));
 };
 
 export const renameGroceryList = async (

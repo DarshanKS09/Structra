@@ -5,6 +5,11 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
  *
  * GENERATED from the applied schema - do not edit by hand.
  *
+ * NOTE: the reminder columns on `tasks`, `completed_at` on `grocery_lists`, and
+ * the `task_due_reminders` view were appended by hand to match migration
+ * 20250101001300, because regenerating needs database access. Regenerating
+ * will produce the same definitions.
+ *
  * Regenerate after any schema change with:
  *   npx supabase gen types typescript --project-id <project-ref> > lib/supabase/types.ts
  *
@@ -65,6 +70,7 @@ export type Database = {
           name: string;
           created_at: string;
           updated_at: string;
+          completed_at: string | null;
         };
         Insert: {
           id?: string | null;
@@ -72,6 +78,7 @@ export type Database = {
           name: string;
           created_at?: string | null;
           updated_at?: string | null;
+          completed_at?: string | null;
         };
         Update: {
           id?: string | null;
@@ -79,7 +86,8 @@ export type Database = {
           name?: string | null;
           created_at?: string | null;
           updated_at?: string | null;
-        };
+
+          completed_at?: string | null;        };
         Relationships: [
           {
             foreignKeyName: "grocery_lists_workspace_id_fkey",
@@ -657,6 +665,8 @@ export type Database = {
           priority: Database["public"]["Enums"]["task_priority"];
           due_at: string | null;
           completed_at: string | null;
+          reminder_offset_minutes: number | null;
+          reminder_sent_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -670,6 +680,8 @@ export type Database = {
           priority?: Database["public"]["Enums"]["task_priority"] | null;
           due_at?: string | null;
           completed_at?: string | null;
+          reminder_offset_minutes?: number | null;
+          reminder_sent_at?: string | null;
           created_at?: string | null;
           updated_at?: string | null;
         };
@@ -683,6 +695,8 @@ export type Database = {
           priority?: Database["public"]["Enums"]["task_priority"] | null;
           due_at?: string | null;
           completed_at?: string | null;
+          reminder_offset_minutes?: number | null;
+          reminder_sent_at?: string | null;
           created_at?: string | null;
           updated_at?: string | null;
         };

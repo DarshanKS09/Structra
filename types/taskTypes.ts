@@ -21,7 +21,26 @@ export interface TaskItem extends ItemBase {
   title: string;
   description: string;
   priority: PriorityLevel;
+  /**
+   * The deadline as a full ISO instant (`tasks.due_at`).
+   *
+   * A full timestamp rather than `YYYY-MM-DD` because "overdue", "due today"
+   * and reminder scheduling all depend on the time of day. The form converts to
+   * and from `datetime-local` at its edges.
+   *
+   * Empty means there is no deadline. New tasks always have one - the data layer
+   * rejects a create without it - but tasks written before that rule existed are
+   * still in the database and are shown as "No deadline" rather than being given
+   * an invented date.
+   */
   dueDate: string;
+  /**
+   * Minutes before `dueDate` to remind the user, or null for no reminder.
+   *
+   * The reminder instant is DERIVED as `dueDate - reminderOffsetMinutes` and is
+   * never stored, so it cannot drift from the deadline.
+   */
+  reminderOffsetMinutes: number | null;
   completed: boolean;
 }
 

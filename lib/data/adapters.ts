@@ -68,6 +68,52 @@ export const fromDateInputValue = (value: string): string | null => {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
 
+/**
+ * `YYYY-MM-DDTHH:mm` in LOCAL time, which is what
+ * `<input type="datetime-local">` expects.
+ *
+ * Deliberately built from local getters rather than `toISOString()`: the input
+ * shows the user their own wall-clock time, so a deadline picked as 09:00 must
+ * round-trip as 09:00 for them. `toISOString()` would convert to UTC and shift
+ * the displayed time by the offset.
+ */
+export const toDateTimeInputValue = (iso: string | null): string => {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n: number) => `${n}`.padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
+/**
+ * A `<input type="datetime-local">` value as an ISO instant.
+ *
+ * The parsed string carries no zone, so it is interpreted in local time and then
+ * converted to the absolute instant `tasks.due_at` stores. That keeps a single
+ * source of truth: the database holds a real timestamp, so every comparison
+ * (overdue, due today, reminder scheduling) is exact.
+ *
+ * A bare date is accepted too, so a legacy `"YYYY-MM-DD"` value still converts
+ * rather than becoming invalid.
+ */
+export const fromDateTimeInputValue = (value: string): string | null => {
+  if (!value) return null;
+  const withTime = value.length === 10 ? `${value}T00:00` : value;
+  const date = new Date(withTime);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
+
+/** A short human deadline, e.g. `"8 Oct, 14:30"`, or `""` when there is none. */
+export const formatDeadline = (iso: string | null): string => {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const pad = (n: number) => `${n}`.padStart(2, "0");
+  return `${date.getDate()} ${months[date.getMonth()]}, ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
 /** `3720` -> `"1h 2m"`, `1800` -> `"30 min"`. */
 export const formatDuration = (seconds: number | null): string => {
   if (seconds === null || seconds <= 0) return "0 min";
@@ -92,7 +138,12 @@ export const taskRowToItem = (row: TaskRow): TaskItem => ({
   title: row.title,
   description: row.description ?? "",
   priority: toTitleCasePriority(row.priority),
-  dueDate: toDateInputValue(row.due_at),
+  // The FULL instant, not a truncated date. `due_at` is timestamptz, and every
+  // comparison downstream (overdue, due today, reminder scheduling) needs the
+  // time of day, not just the calendar date. The form converts to and from
+  // `datetime-local` at the edges.
+  dueDate: row.due_at ?? "",
+  reminderOffsetMinutes: row.reminder_offset_minutes ?? null,
   completed: row.status === "done",
   createdAt: row.created_at,
   updatedAt: row.updated_at
@@ -211,7 +262,11 @@ export const toTaskDraft: ModeDrafts["task"] = (item) => ({
   // stored as SQL NULL rather than an empty string.
   description: item.description || null,
   priority: toDbPriority(item.priority),
-  due_at: fromDateInputValue(item.dueDate)
+  // The item already holds an ISO instant (see `taskRowToItem`), so it is
+  // passed through rather than re-parsed. `fromDateTimeInputValue` also accepts
+  // a bare `YYYY-MM-DD`, which keeps a legacy date-only value writable.
+  due_at: fromDateTimeInputValue(item.dueDate),
+  reminder_offset_minutes: item.reminderOffsetMinutes ?? null
 });
 
 export const toGroceryDraft: ModeDrafts["grocery"] = (item) => ({

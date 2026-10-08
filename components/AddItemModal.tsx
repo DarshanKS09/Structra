@@ -1,6 +1,13 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { type DraftByMode, type ListItem, type ListMode, modeLabels } from "@/types/taskTypes";
+import { toDateTimeInputValue, fromDateTimeInputValue } from "@/lib/data/adapters";
+import {
+  REMINDER_OPTIONS,
+  REMINDER,
+  formatReminderOffset,
+  reminderDueAt
+} from "@/lib/data/reminders";
 
 type Props = {
   mode: ListMode;
@@ -11,13 +18,13 @@ type Props = {
   onUpdate: <M extends ListMode>(mode: M, id: string, data: Partial<DraftByMode[M]>) => void;
 };
 
-type FormState = Record<string, string | number | boolean>;
+type FormState = Record<string, string | number | boolean | null>;
 
 const inputBaseClass =
   "themed-accent-ring w-full rounded-2xl border border-white/20 bg-white/10 px-3 py-3 text-sm text-slate-100 outline-none backdrop-blur-sm placeholder:text-slate-300/75";
 
 const defaults: Record<ListMode, FormState> = {
-  task: { title: "", description: "", priority: "Medium", dueDate: "", completed: false },
+  task: { title: "", description: "", priority: "Medium", dueDate: "", reminderOffsetMinutes: REMINDER.NONE, completed: false },
   grocery: { itemName: "", quantity: "", unit: "pieces", purchased: false },
   habit: { habitName: "", frequency: "Daily", streak: 0, completed: false },
   study: { subject: "", topic: "", estimatedStudyTime: "30 min", completed: false },
@@ -34,6 +41,10 @@ const toDraft = <M extends ListMode>(mode: M, form: FormState): DraftByMode[M] =
         description: String(form.description || ""),
         priority: form.priority as "Low" | "Medium" | "High",
         dueDate: String(form.dueDate || ""),
+        reminderOffsetMinutes:
+          form.reminderOffsetMinutes === null || form.reminderOffsetMinutes === undefined
+            ? null
+            : Number(form.reminderOffsetMinutes) || null,
         completed: Boolean(form.completed)
       } as DraftByMode[M];
     case "grocery":
@@ -83,10 +94,23 @@ const toDraft = <M extends ListMode>(mode: M, form: FormState): DraftByMode[M] =
 };
 
 export function AddItemModal({ mode, isOpen, editingItem, onClose, onSubmit, onUpdate }: Props) {
-  const initial = useMemo(
-    () => (editingItem ? { ...defaults[mode], ...editingItem } : { ...defaults[mode] }),
-    [editingItem, mode]
-  );
+  /**
+   * Seeds the form from an item being edited.
+   *
+   * The task deadline needs converting: `TaskItem.dueDate` holds a full ISO
+   * instant while `<input type="datetime-local">` expects `YYYY-MM-DDTHH:mm` in
+   * local time. Feeding the raw ISO straight in would render blank or wrong,
+   * because the input's value format is not the same string shape.
+   */
+  const initial = useMemo(() => {
+    if (!editingItem) return { ...defaults[mode] };
+    const merged: FormState = { ...defaults[mode], ...editingItem };
+    if (mode === "task" && editingItem.mode === "task") {
+      merged.dueDate = toDateTimeInputValue(editingItem.dueDate || null);
+      merged.reminderOffsetMinutes = editingItem.reminderOffsetMinutes ?? REMINDER.NONE;
+    }
+    return merged;
+  }, [editingItem, mode]);
   const [form, setForm] = useState<FormState>(initial);
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -194,19 +218,78 @@ function Fields({
             value={String(form.description || "")}
             onChange={(e) => setValue("description", e.target.value)}
           />
-          <div className="grid grid-cols-2 gap-3">
-            <OptionPills
-              value={String(form.priority || "Medium")}
-              options={["Low", "Medium", "High"]}
-              onChange={(value) => setValue("priority", value)}
-            />
+
+          {/*
+            The deadline is REQUIRED.
+
+            `required` is a convenience for the user, not the guarantee - the
+            data-access layer rejects a create without a deadline as well, so the
+            rule holds for any write path.
+
+            A native `datetime-local` input is used rather than a custom picker:
+            it is keyboard accessible, uses the device's own locale format, and
+            on mobile opens the native date/time wheel. It needs no new
+            dependency and no bespoke UI to keep consistent across platforms.
+
+            The value round-trips through `toDateTimeInputValue` /
+            `fromDateTimeInputValue` so what the user picked as their local 09:00
+            is stored as the instant that actually is 09:00 for them.
+          */}
+          <label className="block">
+            <span className="mb-1 block text-xs text-slate-300 light:text-slate-600">
+              Deadline <span className="text-rose-300 light:text-rose-600">*</span>
+            </span>
             <input
-              type="date"
+              type="datetime-local"
+              required
               className={inputBaseClass}
               value={String(form.dueDate || "")}
               onChange={(e) => setValue("dueDate", e.target.value)}
             />
-          </div>
+          </label>
+
+          <OptionPills
+            value={String(form.priority || "Medium")}
+            options={["Low", "Medium", "High"]}
+            onChange={(value) => setValue("priority", value)}
+          />
+
+          <label className="block">
+            <span className="mb-1 block text-xs text-slate-300 light:text-slate-600">
+              Reminder
+            </span>
+            <select
+              className={`${inputBaseClass} appearance-none`}
+              value={String(form.reminderOffsetMinutes ?? REMINDER.NONE)}
+              onChange={(e) => setValue("reminderOffsetMinutes", Number(e.target.value))}
+            >
+              {REMINDER_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value} className="bg-slate-900">
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            {/*
+              Explains where the reminder will actually land. Without this the
+              offset is a bare number the user has to interpret themselves.
+            */}
+            <span className="mt-1 block text-[11px] text-slate-400 light:text-slate-500">
+              {form.dueDate
+                ? (() => {
+                    const fire = reminderDueAt(
+                      fromDateTimeInputValue(String(form.dueDate)),
+                      form.reminderOffsetMinutes === null
+                        ? null
+                        : Number(form.reminderOffsetMinutes)
+                    );
+                    if (!fire) return "No reminder will be scheduled for this task.";
+                    return `Will remind you ${formatReminderOffset(
+                      Number(form.reminderOffsetMinutes)
+                    )} — ${new Date(fire).toLocaleString()}.`;
+                  })()
+                : "Set a deadline to choose when to be reminded."}
+            </span>
+          </label>
         </>
       );
     case "grocery":

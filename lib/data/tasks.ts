@@ -80,12 +80,38 @@ export const countTasks = async (workspaceId: string): Promise<{ all: number; ac
   return { all: rows.length, completed, active: rows.length - completed };
 };
 
+/**
+ * Validates a deadline at the data-access layer.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS NOT ONLY IN THE FORM
+ * ---------------------------------------------------------------------------
+ * A `required` attribute on an input is a convenience, not a constraint: it is
+ * trivially bypassed by any client that talks to Supabase directly, by a crafted
+ * API call, or by a bug in the UI. Enforcing the rule here means it holds for
+ * every write path, not just the one the user happens to use.
+ *
+ * `due_at` itself stays NULLABLE in the database - 3 of the 6 existing tasks
+ * have no deadline, and a NOT NULL constraint would fail the migration outright.
+ * So this guards NEW writes while legacy rows continue to exist and are shown in
+ * the UI as "No deadline" rather than being given an invented date.
+ */
+const assertDeadline = (dueAt: string | null | undefined): void => {
+  if (!dueAt || !String(dueAt).trim()) {
+    throw validationError("A task needs a deadline.");
+  }
+  if (Number.isNaN(new Date(String(dueAt)).getTime())) {
+    throw validationError("That deadline is not a valid date.");
+  }
+};
+
 export const createTask = async (
   workspaceId: string,
   createdBy: string,
   input: Omit<TaskInsert, "workspace_id" | "created_by">
 ): Promise<TaskRow> => {
   if (!input.title?.trim()) throw validationError("A task needs a title.");
+  assertDeadline(input.due_at);
 
   const { data, error } = await db()
     .from("tasks")
@@ -104,6 +130,10 @@ export const updateTask = async (
   if (patch.title != null && !patch.title.trim()) {
     throw validationError("A task needs a title.");
   }
+  // A deadline can be changed but not removed. Note this only fires when the key
+  // is actually present, so a bare title edit on a legacy task (which already has
+  // no deadline) is not blocked by a pre-existing gap.
+  if (patch.due_at !== undefined) assertDeadline(patch.due_at);
 
   const { data, error } = await db()
     .from("tasks")

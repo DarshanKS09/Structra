@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { type ListItem } from "@/types/taskTypes";
+import { formatDeadline } from "@/lib/data/adapters";
 
 type Props = {
   item: ListItem;
@@ -60,7 +61,31 @@ export function ItemCard({ item, onToggle, onDelete, onEdit }: Props) {
               <h3 className={`truncate text-sm font-semibold ${completed ? "line-through opacity-70" : ""}`}>
                 {details.title}
               </h3>
-              <p className="truncate text-[11px] text-slate-300">{details.meta[0] || details.subtitle}</p>
+              {/*
+              Both meta entries render, not just the first. Previously
+              `meta[0] || subtitle` meant a task's deadline - the one thing
+              that says whether it is late - was computed and then never shown.
+
+              The task deadline is colour-coded with the same urgency palette as
+              the Dashboard, so a list row and a dashboard badge agree on what
+              "overdue" looks like.
+            */}
+            <div className="mt-0.5 flex items-center gap-1.5 overflow-hidden">
+              {details.meta.filter(Boolean).map((entry, index) => (
+                <span
+                  key={index}
+                  className={`truncate text-[11px] ${
+                    index === 0 ? "text-slate-400 light:text-slate-500" : details.metaClass ?? "text-slate-300"
+                  }`}
+                >
+                  {index > 0 ? "· " : ""}
+                  {entry}
+                </span>
+              ))}
+              {details.meta.every((entry) => !entry) ? (
+                <span className="truncate text-[11px] text-slate-300">{details.subtitle}</span>
+              ) : null}
+            </div>
             </div>
             <span className="text-xs text-slate-300">{expanded ? "^" : "v"}</span>
           </div>
@@ -126,13 +151,63 @@ function CelebrateBurst({ burstKey }: { burstKey: number }) {
   );
 }
 
+/**
+ * A human deadline label that says how late something is.
+ *
+ * The urgency word is the point: "Due 8 Oct, 14:30" on its own does not tell a
+ * user whether they have already missed it. Uses the same vocabulary and colours
+ * as the Dashboard's urgency badges so the two screens agree on what "overdue"
+ * means.
+ *
+ * Legacy tasks with no deadline say so plainly rather than implying anything.
+ */
+function deadlineLabel(dueAt: string | null, completed: boolean): string {
+  if (!dueAt) return "No deadline";
+  const due = new Date(dueAt);
+  if (Number.isNaN(due.getTime())) return "No deadline";
+
+  const when = formatDeadline(dueAt);
+  if (completed) return `Completed · was due ${when}`;
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfDueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate()).getTime();
+  const days = Math.round((startOfDueDay - startOfToday) / 86_400_000);
+
+  if (due.getTime() < now.getTime() && days < 0) {
+    const late = Math.abs(days);
+    return `Overdue · ${late === 1 ? "1 day" : `${late} days`} late`;
+  }
+  if (days === 0) return `Due today · ${when}`;
+  if (days === 1) return "Due tomorrow";
+  return `Due ${when}`;
+}
+
+/** Tone for the task deadline, matching the Dashboard urgency palette. */
+function deadlineTone(dueAt: string | null, completed: boolean): string {
+  if (!dueAt) return "text-slate-400 light:text-slate-500";
+  const due = new Date(dueAt);
+  if (Number.isNaN(due.getTime()) || completed) {
+    return "text-slate-400 light:text-slate-500";
+  }
+  if (due.getTime() < Date.now()) return "text-rose-300 light:text-rose-600";
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfDueDay = new Date(due.getFullYear(), due.getMonth(), due.getDate()).getTime();
+  const days = Math.round((startOfDueDay - startOfToday) / 86_400_000);
+  if (days === 0) return "text-amber-300 light:text-amber-600";
+  if (days <= 3) return "text-sky-300 light:text-sky-600";
+  return "text-slate-300";
+}
+
 function getDetails(item: ListItem) {
   switch (item.mode) {
     case "task":
       return {
         title: item.title,
         subtitle: item.description || "No description",
-        meta: [item.priority, item.dueDate ? `Due ${item.dueDate}` : "No due date"]
+        meta: [item.priority, deadlineLabel(item.dueDate || null, item.completed)],
+        metaClass: deadlineTone(item.dueDate || null, item.completed)
       };
     case "grocery":
       return {

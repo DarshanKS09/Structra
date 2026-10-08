@@ -256,6 +256,61 @@ const describeSmtpError = (error: unknown, settings: SmtpConfig): string => {
  * Never throws for a delivery failure: the caller decides how to react, and an
  * email outage must not be reported to a user as a broken code.
  */
+/**
+ * A task reminder email.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS TEMPLATE DOES NOT DO
+ * ---------------------------------------------------------------------------
+ * It only renders a message. It does not decide WHEN to send, and it cannot:
+ * sending happens on the server from a scheduled job, for tasks whose reminder
+ * instant has passed. A browser tab has no say in it, which is precisely why the
+ * dispatch endpoint exists instead of a client-side timer.
+ *
+ * The deadline is formatted in the recipient's own timezone by the caller, so
+ * the time shown here is already the time the user means.
+ */
+export const reminderEmail = (input: {
+  title: string;
+  /** Pre-formatted in the user's timezone. */
+  dueAtLabel: string;
+  /** e.g. "30 minutes before". Empty when there is no configured offset. */
+  offsetLabel: string;
+  appUrl: string;
+}): { subject: string; html: string; text: string } => {
+  const { title, dueAtLabel, offsetLabel, appUrl } = input;
+
+  const subject = `Reminder: ${title}`;
+  const text = [
+    title,
+    "",
+    `Due ${dueAtLabel}${offsetLabel ? ` (reminder ${offsetLabel})` : ""}.`,
+    "",
+    `Open Structra: ${appUrl}`
+  ].join("\n");
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:24px;background:#0f172a;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#e2e8f0">
+    <div style="max-width:520px;margin:0 auto;background:#1e293b;border:1px solid #334155;border-radius:16px;padding:24px">
+      <p style="margin:0 0 4px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8">Task reminder</p>
+      <h1 style="margin:0 0 12px;font-size:20px;line-height:1.3">${escapeHtml(title)}</h1>
+      <p style="margin:0 0 20px;font-size:14px;color:#cbd5e1">
+        Due <strong>${escapeHtml(dueAtLabel)}</strong>${
+          offsetLabel ? ` &middot; reminder set ${escapeHtml(offsetLabel)}` : ""
+        }.
+      </p>
+      <a href="${escapeHtml(appUrl)}"
+         style="display:inline-block;background:#38bdf8;color:#082f49;text-decoration:none;font-weight:600;font-size:14px;padding:11px 20px;border-radius:12px">
+        Open Structra
+      </a>
+    </div>
+  </body>
+</html>`;
+
+  return { subject, html, text };
+};
+
 export const sendEmail = async (message: EmailMessage): Promise<SendResult> => {
   const settings = config();
 
