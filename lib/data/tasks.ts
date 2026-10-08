@@ -105,6 +105,76 @@ const assertDeadline = (dueAt: string | null | undefined): void => {
   }
 };
 
+/**
+ * Whether `tasks.reminder_offset_minutes` exists in the database yet.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS PROBE IS HERE - AND WHY IT IS A BUG FIX, NOT A WORKAROUND
+ * ---------------------------------------------------------------------------
+ * The reminder columns arrive with
+ * `supabase/migrations/20250101001300_reminders_and_grocery_history.sql`.
+ *
+ * That migration was written but never applied, and the effect of sending the
+ * column before it exists is severe: PostgREST validates every key of a write
+ * payload against its schema cache, so an INSERT that merely *mentions*
+ * `reminder_offset_minutes` - even with a `null` value - is rejected outright with
+ *
+ *   Could not find the 'reminder_offset_minutes' column of 'tasks'
+ *   in the schema cache
+ *
+ * That made EVERY task creation fail, for every user, with an opaque database
+ * error. It was not caused by the mandatory-deadline requirement, and it was not
+ * caused by the form: a task with a perfectly valid deadline could not be saved
+ * at all.
+ *
+ * So the reminder key is omitted from writes when the column is absent, and the
+ * rest of the task - including its deadline - writes normally. Once the migration
+ * is applied the probe flips and reminders begin persisting, with no code change
+ * and no second deploy.
+ *
+ * This is the same guard already used for `grocery_lists.completed_at` in
+ * `lib/data/groceries.ts`; consistency matters because the failure mode is
+ * identical and invisible until a user tries to create something.
+ *
+ * Reads need no equivalent: every task query uses `select("*")`, so a missing
+ * column is simply absent from the response and `taskRowToItem` already maps it
+ * to `null`.
+ *
+ * Cached for the lifetime of the tab, because a running client cannot observe a
+ * schema change mid-session - re-probing per write would be pure overhead.
+ */
+let reminderColumnSupported: boolean | null = null;
+
+const supportsReminderColumn = async (): Promise<boolean> => {
+  if (reminderColumnSupported !== null) return reminderColumnSupported;
+  const { error } = await db()
+    .from("tasks")
+    .select("id, reminder_offset_minutes")
+    .eq("workspace_id", "00000000-0000-0000-0000-000000000000")
+    .limit(1);
+  // A missing column is the only error that changes the answer. Anything else
+  // (RLS returning no rows, a network blip) means the column is fine.
+  reminderColumnSupported = error
+    ? !/reminder_offset_minutes/i.test(error.message ?? "")
+    : true;
+  return reminderColumnSupported;
+};
+
+/**
+ * Drops the reminder key when the column does not exist.
+ *
+ * Deliberately removes the key rather than setting it to `null`: PostgREST
+ * rejects an unknown column even when its value is null, so a `null` here is
+ * exactly what caused the outage.
+ */
+const withReminderColumn = async <T extends Record<string, unknown>>(
+  payload: T
+): Promise<T> => {
+  if (await supportsReminderColumn()) return payload;
+  const { reminder_offset_minutes: _omitted, ...rest } = payload;
+  return rest as T;
+};
+
 export const createTask = async (
   workspaceId: string,
   createdBy: string,
@@ -113,11 +183,16 @@ export const createTask = async (
   if (!input.title?.trim()) throw validationError("A task needs a title.");
   assertDeadline(input.due_at);
 
-  const { data, error } = await db()
-    .from("tasks")
-    .insert({ ...input, title: input.title.trim(), workspace_id: workspaceId, created_by: createdBy })
-    .select("*")
-    .single();
+  // Strips `reminder_offset_minutes` when its migration has not been applied, so
+  // a task with a valid deadline always saves.
+  const payload = await withReminderColumn({
+    ...input,
+    title: input.title.trim(),
+    workspace_id: workspaceId,
+    created_by: createdBy
+  });
+
+  const { data, error } = await db().from("tasks").insert(payload).select("*").single();
   if (error) throw toDataError(error, "Could not create the task.");
   return data;
 };
@@ -135,9 +210,13 @@ export const updateTask = async (
   // no deadline) is not blocked by a pre-existing gap.
   if (patch.due_at !== undefined) assertDeadline(patch.due_at);
 
+  // Same guard as create: editing a deadline on a task must not fail just because
+  // the reminder column is absent.
+  const payload = await withReminderColumn({ ...patch });
+
   const { data, error } = await db()
     .from("tasks")
-    .update(patch)
+    .update(payload)
     .eq("workspace_id", workspaceId)
     .eq("id", taskId)
     .select("*")

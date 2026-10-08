@@ -17,6 +17,26 @@ import {
   isManagedAvatar,
   validateAvatarFile
 } from "@/lib/profile/storage";
+import { useThemeController } from "@/lib/hooks/useThemeController";
+import type { Appearance, DarkAccent } from "@/store/useTaskStore";
+
+/**
+ * Exactly two appearance choices.
+ *
+ * "System" was removed on purpose: with it present, "Light" and "Dark" could each
+ * be silently overridden by the operating system, so the label would not describe
+ * what the user was actually looking at.
+ */
+const APPEARANCE_OPTIONS: { value: Appearance; label: string; hint: string }[] = [
+  { value: "light", label: "Light", hint: "Use the light theme" },
+  { value: "dark", label: "Dark", hint: "Use a dark theme" }
+];
+
+/** The two existing dark accents. Light has no accent choice. */
+const ACCENT_OPTIONS: { value: DarkAccent; label: string }[] = [
+  { value: "ocean", label: "Ocean" },
+  { value: "crimson", label: "Crimson" }
+];
 
 /**
  * Renders an avatar image.
@@ -72,6 +92,9 @@ function InitialBadge({
  */
 export function ProfileMenu() {
   const { user, profile, refresh, signOut } = useAuth();
+  // Appearance is read here and nowhere else in the UI, which is what keeps a
+  // theme control from reappearing in a header.
+  const { appearance, darkAccent, setAppearance, setDarkAccent } = useThemeController();
 
   const [open, setOpen] = useState(false);
   const [displayName, setDisplayName] = useState(profile?.display_name ?? "");
@@ -238,16 +261,31 @@ export function ProfileMenu() {
     setError(null);
     setSaved(false);
     try {
+      // Order matters, and it is the whole safety story of a replacement:
+      //
+      //   1. upload the new object      - nothing is lost if this fails
+      //   2. point the profile at it    - the DB now references the new file
+      //   3. delete the previous object - only now is it unreferenced
+      //
+      // Deleting the old image before step 2 (as this used to) meant a failed
+      // profile update left `avatar_url` pointing at a deleted object, i.e. a
+      // broken avatar with no way back. Doing it in this order means any failure
+      // leaves the user with a working photo.
       const url = await uploadAvatar(user.id, file);
-      // Replace a previously uploaded file rather than leaving both on disk.
-      const previous = selectedAvatar ?? profile?.avatar_url ?? null;
-      if (previous && isManagedAvatar(previous)) {
-        await deleteAvatar(user.id, previous);
-      }
+
       setSelectedAvatar(url);
       setPendingPhoto(null);
       if (preview) URL.revokeObjectURL(preview);
       await updateProfile(user.id, { avatar_url: url });
+
+      // The new avatar is live and persisted, so the old one is now safe to drop.
+      // Best-effort: a leftover object is inert, and failing here must not be
+      // reported as a failed upload.
+      const previous = selectedAvatar ?? profile?.avatar_url ?? null;
+      if (previous && isManagedAvatar(previous)) {
+        void deleteAvatar(user.id, previous).catch(() => undefined);
+      }
+
       await refresh();
       setSaved(true);
     } catch (caught) {
@@ -455,6 +493,70 @@ export function ProfileMenu() {
               {error.message}
             </p>
           ) : null}
+
+          {/*
+            Appearance lives INSIDE the profile, not as a control in the app
+            header. The header previously carried its own round theme swatch next
+            to the avatar, which on mobile read as a second avatar - and it meant
+            two places to reach for the same setting. There is now exactly one
+            entry point, here.
+          */}
+          <fieldset className="mt-3">
+            <legend className="mb-1.5 text-[11px] text-slate-300 light:text-slate-600">
+              Theme
+            </legend>
+            <div className="grid grid-cols-2 gap-1.5" role="group" aria-label="Theme">
+              {APPEARANCE_OPTIONS.map((option) => {
+                const isActive = appearance === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setAppearance(option.value)}
+                    aria-pressed={isActive}
+                    title={option.hint}
+                    className={`h-9 rounded-lg border px-2 text-xs font-medium transition ${
+                      isActive
+                        ? "themed-accent-solid border-transparent"
+                        : "border-white/25 hover:border-white/50 light:border-slate-300"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/*
+              Colour is an independent axis, so this row is always shown - in the
+              light appearance too. Hiding it here would mean the colour control
+              did nothing while in Light, which is the bug this row's visibility
+              used to hide rather than fix.
+            */}
+            <p className="mt-2.5 mb-1 text-[10px] text-slate-400 light:text-slate-500">
+              Colour
+            </p>
+            <div className="flex items-center gap-1.5" role="group" aria-label="Colour">
+              {ACCENT_OPTIONS.map((option) => {
+                const isActive = darkAccent === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setDarkAccent(option.value)}
+                    aria-pressed={isActive}
+                    className={`h-7 rounded-lg border px-2.5 text-[11px] font-medium transition ${
+                      isActive
+                        ? "themed-accent-solid border-transparent"
+                        : "border-white/25 hover:border-white/50 light:border-slate-300"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
 
           <div className="mt-4 flex items-center gap-2">
             <button

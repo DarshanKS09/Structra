@@ -1,6 +1,7 @@
 import { db } from "@/lib/data/client";
 import { toDataError } from "@/lib/data/errors";
 import type { TaskStatus } from "@/lib/data/types";
+import { REMINDER_OPEN_STATUSES } from "@/lib/data/reminders";
 
 /**
  * Task analytics.
@@ -102,11 +103,13 @@ export type TaskAnalytics = {
 /**
  * Statuses that still count as work.
  *
- * `done` is deliberately absent, which is what makes "completed tasks are never
- * counted as overdue" a property of the query rather than a rule each caller has
- * to remember. `archived` is excluded too: an archived task is not pending work.
+ * Re-exported from the reminders module rather than redeclared, so the analytics
+ * counts and the reminder sweep cannot drift apart. `done` is deliberately
+ * absent, which is what makes "completed tasks are never counted as overdue" a
+ * property of the query rather than a rule each caller has to remember.
+ * `archived` is excluded too: an archived task is not pending work.
  */
-const OPEN_STATUSES: TaskStatus[] = ["todo", "in_progress", "blocked"];
+const OPEN_STATUSES: TaskStatus[] = REMINDER_OPEN_STATUSES;
 
 /**
  * The headline task metrics for one workspace.

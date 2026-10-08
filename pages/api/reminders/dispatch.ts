@@ -72,7 +72,9 @@ export default async function handler(
   const { reminderEmail, sendEmail, isEmailConfigured, missingEmailConfig } = await import(
     "@/lib/auth/email"
   );
-  const { formatReminderOffset, reminderDueAt } = await import("@/lib/data/reminders");
+  const { formatReminderOffset, reminderDueAt, REMINDER_OPEN_STATUSES } = await import(
+    "@/lib/data/reminders"
+  );
   const { formatDeadline } = await import("@/lib/data/adapters");
 
   if (!isEmailConfigured()) {
@@ -95,7 +97,7 @@ export default async function handler(
     .select("id, workspace_id, created_by, title, due_at, status, reminder_offset_minutes, reminder_sent_at, updated_at")
     .not("reminder_offset_minutes", "is", null)
     .not("due_at", "is", null)
-    .neq("status", "done")
+    .in("status", REMINDER_OPEN_STATUSES)
     .lte("due_at", new Date(now + 7 * 86_400_000).toISOString())
     .limit(MAX_PER_RUN * 4);
 

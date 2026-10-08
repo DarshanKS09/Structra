@@ -12,10 +12,10 @@ import {
 } from "@/lib/data/analytics";
 import { DonutChart } from "@/components/analytics/DonutChart";
 import { TrendBars, BreakdownBars } from "@/components/analytics/TrendCharts";
-import { ProfileMenu } from "@/components/ProfileMenu";
 import { NavBar } from "@/components/NavBar";
 import { toDataError, type DataError } from "@/lib/data/errors";
 import { useTaskStore } from "@/store/useTaskStore";
+import { useThemeController } from "@/lib/hooks/useThemeController";
 
 export default function TaskAnalyticsPage(props: AuthBootstrapProps) {
   return (
@@ -30,13 +30,17 @@ function TaskAnalyticsView() {
   const workspaceId = workspace?.id ?? null;
   const view = useTaskStore((s) => s.view);
   const setView = useTaskStore((s) => s.setView);
-  const theme = useTaskStore((s) => s.theme);
-  const setTheme = useTaskStore((s) => s.setTheme);
+  // Appearance is owned by the shared controller; the page only needs it to
+  // resolve the concrete theme. There is deliberately no theme control here -
+  // Profile -> Appearance is the only entry point.
+  useThemeController();
 
   const [summary, setSummary] = useState<TaskAnalytics | null>(null);
   const [trend, setTrend] = useState<CompletionTrendPoint[]>([]);
   const [priorities, setPriorities] = useState<NamedBreakdown[]>([]);
   const [categories, setCategories] = useState<NamedBreakdown[]>([]);
+  // Bumped by any task write elsewhere, so analytics recalculate immediately.
+  const taskRevision = useTaskStore((state) => state.taskRevision);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<DataError | null>(null);
 
@@ -60,12 +64,12 @@ function TaskAnalyticsView() {
   useEffect(() => {
     if (status !== "authenticated" || bootstrapping || !workspaceId) return;
     void load();
-  }, [status, bootstrapping, workspaceId, load]);
+    // Re-read whenever a task is completed, edited or deleted anywhere else in
+    // the app. Without this the page showed the numbers captured when it was
+    // opened, which is why the donut and the completion percentage only changed
+    // after a manual refresh.
+  }, [status, bootstrapping, workspaceId, load, taskRevision]);
 
-  const cycleTheme = useCallback(() => {
-    const next = { ocean: "crimson", crimson: "light", light: "ocean" } as const;
-    setTheme(next[theme]);
-  }, [theme, setTheme]);
 
   if (status === "unknown" || bootstrapping) {
     return (
@@ -85,8 +89,6 @@ function TaskAnalyticsView() {
     );
   }
 
-  const themeClass = theme === "ocean" ? "bg-sky-500" : theme === "crimson" ? "bg-rose-500" : "bg-[#d0875c]";
-  const themeShort = theme === "ocean" ? "OC" : theme === "crimson" ? "CR" : "LT";
 
   return (
     <>
@@ -99,9 +101,6 @@ function TaskAnalyticsView() {
         <NavBar
           view={view}
           onNavigate={setView}
-          themeLabel={themeShort}
-          themeClassName={`${themeClass} text-slate-950`}
-          onCycleTheme={cycleTheme}
         />
 
         <header className="flex items-center justify-between gap-3">
@@ -111,7 +110,6 @@ function TaskAnalyticsView() {
               Derived live from your tasks in Supabase
             </p>
           </div>
-          <ProfileMenu />
         </header>
 
         {error ? (

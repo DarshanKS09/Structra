@@ -13,10 +13,10 @@ import {
 import { DonutChart } from "@/components/analytics/DonutChart";
 import { TrendLine, BreakdownBars } from "@/components/analytics/TrendCharts";
 import { formatStudyTime } from "@/components/analytics/AnalyticsCards";
-import { ProfileMenu } from "@/components/ProfileMenu";
 import { NavBar } from "@/components/NavBar";
 import { toDataError, type DataError } from "@/lib/data/errors";
 import { useTaskStore } from "@/store/useTaskStore";
+import { useThemeController } from "@/lib/hooks/useThemeController";
 
 export default function StudyAnalyticsPage(props: AuthBootstrapProps) {
   return (
@@ -32,11 +32,14 @@ function StudyAnalyticsView() {
   const userId = user?.id ?? null;
   const view = useTaskStore((s) => s.view);
   const setView = useTaskStore((s) => s.setView);
-  const theme = useTaskStore((s) => s.theme);
-  const setTheme = useTaskStore((s) => s.setTheme);
+  // Appearance is owned by the shared controller; the page only needs it to
+  // resolve the concrete theme. There is deliberately no theme control here -
+  // Profile -> Appearance is the only entry point.
+  useThemeController();
 
   const [analytics, setAnalytics] = useState<StudyAnalytics | null>(null);
   const [trend, setTrend] = useState<StudyTrendPoint[]>([]);
+  const taskRevision = useTaskStore((state) => state.taskRevision);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<DataError | null>(null);
 
@@ -61,12 +64,10 @@ function StudyAnalyticsView() {
   useEffect(() => {
     if (status !== "authenticated" || bootstrapping || !workspaceId || !userId) return;
     void load();
-  }, [status, bootstrapping, workspaceId, userId, load]);
+    // Starting or stopping a session changes the totals, so re-read rather than
+    // showing figures captured when the page was opened.
+  }, [status, bootstrapping, workspaceId, userId, load, taskRevision]);
 
-  const cycleTheme = useCallback(() => {
-    const next = { ocean: "crimson", crimson: "light", light: "ocean" } as const;
-    setTheme(next[theme]);
-  }, [theme, setTheme]);
 
   if (status === "unknown" || bootstrapping) {
     return (
@@ -86,9 +87,6 @@ function StudyAnalyticsView() {
     );
   }
 
-  const themeClass =
-    theme === "ocean" ? "bg-sky-500" : theme === "crimson" ? "bg-rose-500" : "bg-[#d0875c]";
-  const themeShort = theme === "ocean" ? "OC" : theme === "crimson" ? "CR" : "LT";
 
   return (
     <>
@@ -101,9 +99,6 @@ function StudyAnalyticsView() {
         <NavBar
           view={view}
           onNavigate={setView}
-          themeLabel={themeShort}
-          themeClassName={`${themeClass} text-slate-950`}
-          onCycleTheme={cycleTheme}
         />
 
         <header className="flex items-center justify-between gap-3">
@@ -113,7 +108,6 @@ function StudyAnalyticsView() {
               Actual session durations from Supabase
             </p>
           </div>
-          <ProfileMenu />
         </header>
 
         {error ? (

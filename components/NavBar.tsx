@@ -45,19 +45,21 @@ const EXTRA_PAGES: { href: string; label: string }[] = [
 type NavBarProps = {
   view: AppView;
   onNavigate: (view: AppView) => void;
-  /** Short theme name + swatch class, owned by the page. */
-  themeLabel: string;
-  themeClassName: string;
-  onCycleTheme: () => void;
 };
 
-export function NavBar({
-  view,
-  onNavigate,
-  themeLabel,
-  themeClassName,
-  onCycleTheme
-}: NavBarProps) {
+/**
+ * The application navigation bar.
+ *
+ * The theme button that used to live here has moved into Profile -> Appearance.
+ * Two consequences worth recording:
+ *
+ *   - The requirement is that Profile is the only intentional entry point to the
+ *     theme selector, and a header swatch is a second one.
+ *   - On mobile that swatch sat immediately beside the avatar as another circle
+ *     with light text in the middle, which read as a duplicate avatar. Removing
+ *     it fixes the visual duplication at its source rather than hiding it.
+ */
+export function NavBar({ view, onNavigate }: NavBarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
@@ -97,86 +99,29 @@ export function NavBar({
 
   return (
     <div ref={wrapperRef} className="space-y-3">
-      {/* --- desktop bar -------------------------------------------------- */}
-      <div className="hidden items-center justify-between md:flex">
+      {/*
+        ONE bar, ONE avatar.
+
+        This used to be two separate bars - a desktop one and a mobile one - each
+        with its own `<ProfileMenu />`. Tailwind's responsive `display` kept only
+        one visible, so it looked correct, but two instances were mounted: two
+        profile popovers, two hidden file inputs, and two subscriptions to the
+        appearance setting. The mobile bar also carried a second round control
+        beside the avatar (the theme swatch), which is what read on a phone as a
+        duplicated avatar.
+
+        Collapsing to a single bar makes "exactly one avatar" true of the
+        component tree and not merely of the rendered pixels. The left-hand slot
+        simply shows the current-section label on desktop and the menu button on
+        mobile, so the right-hand slot is the profile control at every width.
+      */}
+      <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-slate-300 light:text-slate-600">
+          <span className="hidden text-sm font-medium text-slate-300 light:text-slate-600 md:inline">
             {view === "dashboard" ? "Dashboard" : view === "modes" ? "All Sections" : modeLabels[view]}
           </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <ProfileMenu />
-          <motion.button
-            type="button"
-            onClick={onCycleTheme}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.93 }}
-            className={`h-10 w-10 rounded-full text-xs font-semibold ${themeClassName}`}
-            title="Change Theme"
-            aria-label="Change theme"
-          >
-            {themeLabel}
-          </motion.button>
-        </div>
-      </div>
 
-      <nav aria-label="Sections" className="hidden gap-2 overflow-x-auto pb-1 md:flex">
-        <motion.button
-          type="button"
-          onClick={() => go("dashboard")}
-          whileHover={{ y: -2 }}
-          whileTap={{ scale: 0.98 }}
-          aria-current={isActive("dashboard") ? "page" : undefined}
-          className={navItemClass(isActive("dashboard"))}
-        >
-          Dashboard
-        </motion.button>
-        {(Object.keys(modeLabels) as ListMode[]).map((mode) => (
-          <motion.button
-            key={mode}
-            type="button"
-            onClick={() => go(mode)}
-            whileHover={{ y: -2 }}
-            whileTap={{ scale: 0.98 }}
-            aria-current={isActive(mode) ? "page" : undefined}
-            className={navItemClass(isActive(mode))}
-          >
-            {modeLabels[mode]}
-          </motion.button>
-        ))}
-        <motion.button
-          type="button"
-          onClick={() => go("modes")}
-          whileHover={{ y: -2 }}
-          whileTap={{ scale: 0.98 }}
-          aria-current={isActive("modes") ? "page" : undefined}
-          className={navItemClass(isActive("modes"))}
-        >
-          All Sections
-        </motion.button>
-
-        {/*
-          Analytics are real pages, not modes, so they are ordinary links rather
-          than new members of the `ListMode` union. Keeping them separate means
-          adding a report never widens that union or touches a list component.
-        */}
-        {EXTRA_PAGES.map((page) => (
-          <motion.a
-            key={page.href}
-            href={page.href}
-            whileHover={{ y: -2 }}
-            whileTap={{ scale: 0.98 }}
-            className="flex h-10 items-center rounded-xl border border-white/20 px-3 text-sm transition hover:border-white/40 hover:bg-white/10 light:border-slate-300"
-          >
-            {page.label}
-          </motion.a>
-        ))}
-      </nav>
-
-      {/* --- mobile bar ---------------------------------------------------- */}
-      <div className="md:hidden">
-        <div className="flex items-center justify-between">
-          <div className="relative">
+          <div className="relative md:hidden">
             <motion.button
               type="button"
               onClick={() => setMobileOpen((prev) => !prev)}
@@ -243,22 +188,64 @@ export function NavBar({
               )}
             </AnimatePresence>
           </div>
-
-          <div className="flex items-center gap-2">
-            <ProfileMenu />
-            <motion.button
-              type="button"
-              onClick={onCycleTheme}
-              whileTap={{ scale: 0.92 }}
-              className={`h-11 w-11 rounded-full text-xs font-semibold ${themeClassName}`}
-              title="Change Theme"
-              aria-label="Change theme"
-            >
-              {themeLabel}
-            </motion.button>
-          </div>
         </div>
+
+        <ProfileMenu />
       </div>
+
+      <nav aria-label="Sections" className="hidden gap-2 overflow-x-auto pb-1 md:flex">
+        <motion.button
+          type="button"
+          onClick={() => go("dashboard")}
+          whileHover={{ y: -2 }}
+          whileTap={{ scale: 0.98 }}
+          aria-current={isActive("dashboard") ? "page" : undefined}
+          className={navItemClass(isActive("dashboard"))}
+        >
+          Dashboard
+        </motion.button>
+        {(Object.keys(modeLabels) as ListMode[]).map((mode) => (
+          <motion.button
+            key={mode}
+            type="button"
+            onClick={() => go(mode)}
+            whileHover={{ y: -2 }}
+            whileTap={{ scale: 0.98 }}
+            aria-current={isActive(mode) ? "page" : undefined}
+            className={navItemClass(isActive(mode))}
+          >
+            {modeLabels[mode]}
+          </motion.button>
+        ))}
+        <motion.button
+          type="button"
+          onClick={() => go("modes")}
+          whileHover={{ y: -2 }}
+          whileTap={{ scale: 0.98 }}
+          aria-current={isActive("modes") ? "page" : undefined}
+          className={navItemClass(isActive("modes"))}
+        >
+          All Sections
+        </motion.button>
+
+        {/*
+          Analytics are real pages, not modes, so they are ordinary links rather
+          than new members of the `ListMode` union. Keeping them separate means
+          adding a report never widens that union or touches a list component.
+        */}
+        {EXTRA_PAGES.map((page) => (
+          <motion.a
+            key={page.href}
+            href={page.href}
+            whileHover={{ y: -2 }}
+            whileTap={{ scale: 0.98 }}
+            className="flex h-10 items-center rounded-xl border border-white/20 px-3 text-sm transition hover:border-white/40 hover:bg-white/10 light:border-slate-300"
+          >
+            {page.label}
+          </motion.a>
+        ))}
+      </nav>
+
     </div>
   );
 }

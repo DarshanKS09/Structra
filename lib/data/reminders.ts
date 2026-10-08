@@ -1,5 +1,6 @@
 import { db } from "@/lib/data/client";
 import { toDataError } from "@/lib/data/errors";
+import type { TaskStatus } from "@/lib/data/types";
 
 /**
  * Task reminders.
@@ -39,6 +40,16 @@ import { toDataError } from "@/lib/data/errors";
  * display, but scheduling off it would reintroduce exactly the browser-local
  * versus server-UTC mixing this avoids.
  */
+
+/**
+ * Statuses that can still raise a reminder.
+ *
+ * Deliberately an allow-list, shared by the in-app query and the email sweep so
+ * the two can never disagree. A `.neq("status", "done")` written twice looks
+ * equivalent but is not: it would keep emailing reminders for `archived` tasks,
+ * which the user has explicitly put away.
+ */
+export const REMINDER_OPEN_STATUSES: TaskStatus[] = ["todo", "in_progress", "blocked"];
 
 /** Sentinel for "no reminder". A real offset is always a positive number. */
 export const REMINDER = { NONE: 0 } as const;
@@ -176,7 +187,7 @@ export const listDueReminders = async (
     .from("tasks")
     .select(REMINDER_COLUMNS)
     .eq("workspace_id", workspaceId)
-    .neq("status", "done")
+    .in("status", REMINDER_OPEN_STATUSES)
     .not("due_at", "is", null)
     .not("reminder_offset_minutes", "is", null)
     .lte("due_at", new Date(now + 7 * 86_400_000).toISOString()); // any offset up to a week

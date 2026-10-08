@@ -29,11 +29,20 @@ import { DataError } from "@/lib/data/errors";
  * bucket, path layout and validation rules are unchanged.
  *
  * ---------------------------------------------------------------------------
- * WHY ONE OBJECT PER USER
+ * WHY EACH UPLOAD GETS ITS OWN OBJECT
  * ---------------------------------------------------------------------------
- * The path is always `<user_id>/avatar.<ext>`, so re-uploading replaces the
- * previous photo instead of accumulating orphans. Switching format leaves the
- * old object behind, which is why the cleanup step below removes any sibling.
+ * The path was once `<user_id>/avatar.<ext>`, which made a photo replaceable
+ * exactly once: Supabase's `createSignedUploadUrl` will not issue a token for an
+ * object that already exists, so every upload after the first failed with "Could
+ * not prepare the upload. Please try again." The filename is now unique per
+ * upload, which fixes the failure at its source and additionally means the stored
+ * URL always changes - so a replacement can never be masked by the browser
+ * serving the previous image from cache.
+ *
+ * The trade-off is that the previous object survives until the caller removes it.
+ * `confirmUpload` does that only AFTER the new object is stored and the profile
+ * row points at it, so a failure at any earlier step leaves the user with the
+ * photo they already had.
  */
 
 const BUCKET = "avatars";
@@ -88,13 +97,61 @@ export const validateAvatarFile = (file: File): { ok: true } | { ok: false; mess
   return { ok: true };
 };
 
-/** The object path for a user's avatar, given the verified user id. */
-export const avatarPath = (userId: string, mimeType: string): string => {
+/**
+ * The object path for a new avatar upload.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THE FILENAME IS UNIQUE
+ * ---------------------------------------------------------------------------
+ * This used to be a fixed `<user id>/avatar.<ext>`, and that is what made a photo
+ * replaceable only once.
+ *
+ * Supabase's `createSignedUploadUrl` refuses to mint a token for an object that
+ * ALREADY EXISTS - it is a create-URL, not an upsert-URL. So the first upload
+ * succeeded and every subsequent one failed at ticket time with "Could not
+ * prepare the upload. Please try again." The path was the bug, not the network,
+ * the file input, or the session: `upsert: true` on the client upload never got
+ * a chance to run, because the token was never issued.
+ *
+ * A per-upload unique name removes the collision entirely, which is also what
+ * makes concurrent uploads from two tabs safe.
+ *
+ * The previous object is NOT overwritten, so it is removed only AFTER the new
+ * one is stored and the profile points at it (see `confirmUpload`). That ordering
+ * is what guarantees a failed upload can never leave the user with no photo.
+ *
+ * The extension still comes from the fixed MIME table, never from the client's
+ * file name, so traversal and `.svg` smuggling remain impossible.
+ */
+export const avatarPath = (userId: string, mimeType: string, token?: string): string => {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(userId) || userId === "." || userId === "..") {
     throw new DataError("VALIDATION", "Could not determine the account for this upload.");
   }
   const extension = EXTENSION_BY_TYPE[mimeType] ?? "bin";
-  return `${userId}/avatar.${extension}`;
+  const unique = token ?? newAvatarToken();
+  return `${userId}/${unique}.${extension}`;
+};
+
+/**
+ * A short, collision-resistant object name.
+ *
+ * `crypto.randomUUID` where available; otherwise a random hex string. Both are
+ * generated in the browser, so the value never travels to the server - the
+ * server mints its own token and returns the authoritative path, which is what
+ * the client actually uploads to. This local token is only used as a fallback.
+ */
+const newAvatarToken = (): string => {
+  const cryptoRef = typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
+  if (cryptoRef && typeof cryptoRef.randomUUID === "function") {
+    return cryptoRef.randomUUID();
+  }
+  if (cryptoRef && typeof cryptoRef.getRandomValues === "function") {
+    const bytes = cryptoRef.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  // Last resort. Still unpredictable enough for an object name, and the server
+  // path remains the authority regardless.
+  return `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
 };
 
 /** Turns a fetch failure into something a user can act on. */
@@ -142,8 +199,9 @@ const requestUploadTicket = async (file: File): Promise<UploadTicket> => {
 /**
  * Uploads a photo and returns the URL to persist in `profiles.avatar_url`.
  *
- * Re-uploading overwrites the same object, so replacing a photo cannot orphan
- * the previous file.
+ * Every call writes a NEW object (see `avatarPath`), so this succeeds any number
+ * of times for the same user. Callers are responsible for deleting the previous
+ * object once the profile row has been updated to the new URL.
  */
 export const uploadAvatar = async (userId: string, file: File): Promise<string> => {
   const check = validateAvatarFile(file);
@@ -151,9 +209,10 @@ export const uploadAvatar = async (userId: string, file: File): Promise<string> 
 
   const mimeType = file.type.toLowerCase().trim();
 
-  // `userId` is only used for the cleanup check below; the authoritative path
-  // comes back from the server, which derives it from the verified session.
-  const expectedPath = avatarPath(userId, mimeType);
+  // `userId` is validated locally so a bad session id fails fast with a clear
+  // message; the AUTHORITATIVE path comes back from the server, which derives it
+  // from the verified session and mints a unique object name.
+  avatarPath(userId, mimeType);
   const ticket = await requestUploadTicket(file);
 
   const storage = db().storage.from(BUCKET);

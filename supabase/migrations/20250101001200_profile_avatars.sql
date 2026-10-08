@@ -13,11 +13,21 @@
 --   object URL - the column keeps its original meaning and stays small.
 --
 -- Object layout
---   Every object lives at `<user_id>/avatar.<ext>`. The user id is the first
---   path segment, which makes "is this object yours?" answerable from the path
---   alone, with no lookup. It also means one avatar per user by construction:
---   replacing a photo overwrites the same object, so no orphaned files and no
---   need to garbage-collect an old version.
+--   Every object lives at `<user_id>/<unique-file-id>.<ext>`. The user id is the
+--   first path segment, which makes "is this object yours?" answerable from the
+--   path alone, with no lookup.
+--
+--   The filename is NOT fixed at `avatar.<ext>`. It used to be, and that made a
+--   photo replaceable exactly once: `createSignedUploadUrl` will not mint a token
+--   for an object that already exists, so the first upload succeeded and every
+--   later one failed with "Could not prepare the upload." A unique name per upload
+--   removes the collision, and because the stored URL then always changes, a
+--   replacement can never be masked by the browser serving the previous image.
+--
+--   The trade-off is that a superseded object survives until the caller removes
+--   it. `confirmUpload` in `components/ProfileMenu.tsx` does that only AFTER the
+--   profile row points at the new object, so a failure at any earlier step leaves
+--   the user with the photo they already had.
 --
 -- Security model
 --   * Writes are strictly owner-only. Every write policy requires the first path
@@ -57,8 +67,15 @@ on conflict (id) do update
       file_size_limit = excluded.file_size_limit,
       allowed_mime_types = excluded.allowed_mime_types;
 
-comment on bucket 'avatars' is
-  'User profile photos. Objects are stored at <user_id>/avatar.<ext>; writes are restricted to the owning user.';
+-- Bucket description: user profile photos. Objects are stored at
+-- <user_id>/<unique-file-id>.<ext>; writes are restricted to the owning user.
+--
+-- This was previously written as `comment on bucket 'avatars' is '...'`, which is
+-- not valid PostgreSQL - there is no `COMMENT ON BUCKET` statement, because a
+-- storage bucket is a row in `storage.buckets`, not a SQL object that can carry a
+-- comment. It failed the whole migration with `syntax error at or near "bucket"`.
+-- The intent is preserved here as a plain comment, which is where a reader will
+-- actually look for it anyway.
 
 -- ---------------------------------------------------------------------------
 -- Row level security on storage.objects

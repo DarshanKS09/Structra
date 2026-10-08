@@ -10,6 +10,7 @@ import {
   type OptimisticIntent
 } from "@/lib/hooks/useOptimisticItems";
 import { DataError, toDataError } from "@/lib/data/errors";
+import { useTaskStore } from "@/store/useTaskStore";
 import type { Json } from "@/lib/supabase/types";
 import type { AsyncStatus } from "@/lib/data/types";
 import {
@@ -140,6 +141,12 @@ export function useModeItems(
   const { workspace, user } = useAuth();
   const workspaceId = workspace?.id ?? null;
   const userId = user?.id ?? null;
+
+  // The shared "task data changed" signal. Read here so this hook re-reads when
+  // the Dashboard or an analytics page commits a write, and written after this
+  // hook's own commits so the reverse direction is just as immediate.
+  const taskRevision = useTaskStore((state) => state.taskRevision);
+  const bumpTaskRevision = useTaskStore((state) => state.bumpTaskRevision);
 
   // Resolved once per mount for the modes that need a parent row.
   const [recordTypeId, setRecordTypeId] = useState<string | null>(null);
@@ -296,7 +303,18 @@ export function useModeItems(
     workspaceId,
     userId,
     groceryListId,
-    recordTypeId
+    recordTypeId,
+    // Re-read when any other surface commits a task write.
+    //
+    // This hook instance is mounted once for the whole page, so it holds the
+    // section list it fetched when that section was last opened. Completing a
+    // task from the Dashboard writes to Supabase and updates the Dashboard's own
+    // snapshot - but without this dependency, switching back to the Task section
+    // showed the pre-write state until something forced a remount. That is the
+    // "dashboard and task centre disagree" bug, and this is the fix: the same
+    // signal the Dashboard bumps is watched here, and the list is re-read from
+    // Supabase - still the only source of truth.
+    taskRevision
   ]);
 
   // --- counts ---------------------------------------------------------------
@@ -434,7 +452,14 @@ export function useModeItems(
     <T,>(
       intent: OptimisticIntent,
       operation: () => Promise<T>,
-      toItem: (saved: T) => ListItem
+      toItem: (saved: T) => ListItem,
+      /**
+       * The mode this write belongs to.
+       *
+       * Only needed for deletes, where `toItem` is never called and the mode
+       * therefore cannot be inferred from the result.
+       */
+      affectedMode?: ListMode
     ) =>
       run(intent, operation, (saved) => {
         // A confirmed delete must leave the base list too. Clearing only the
@@ -444,6 +469,23 @@ export function useModeItems(
 
         if (deleted.length > 0) {
           query.setData((previous) => (previous ?? []).filter((row) => !deleted.includes(row.id)));
+        }
+
+        // Announce the write to every OTHER task surface, now that it has
+        // actually been confirmed by the database.
+        //
+        // This is deliberately after reconciliation rather than before: a bump
+        // on a failed write would make sibling views re-read and re-render state
+        // the database never accepted. `run` only invokes this callback on
+        // success, so the signal can never mean "a write failed".
+        //
+        // Task and study are announced because those are the two surfaces whose
+        // analytics are derived from these rows and are rendered elsewhere in the
+        // app. Announcing them is what makes the Dashboard, the Task Centre and
+        // the analytics pages agree without any of them owning the others.
+        const mode = affectedMode ?? (saved !== undefined ? toItem(saved).mode : undefined);
+        if (mode === "task" || mode === "study") {
+          bumpTaskRevision();
         }
 
         // Deletes return nothing to reconcile.
@@ -465,7 +507,7 @@ export function useModeItems(
         });
         void refreshCounts();
       }),
-    [run, query, refreshCounts]
+    [run, query, refreshCounts, bumpTaskRevision]
   );
 
   // --- CREATE ---------------------------------------------------------------
@@ -742,7 +784,7 @@ export function useModeItems(
       try {
         switch (existing.mode) {
           case "task":
-            return await commit({ deletes: [id] }, () => deleteTask(wsId, id), () => existing);
+            return await commit({ deletes: [id] }, () => deleteTask(wsId, id), () => existing, "task");
           case "grocery": {
             if (!groceryListId) throw new DataError("DATABASE", "The grocery list is still loading.");
             return await commit({ deletes: [id] }, () => deleteGroceryItem(groceryListId, id), () => existing);
@@ -750,7 +792,7 @@ export function useModeItems(
           case "habit":
             return await commit({ deletes: [id] }, () => deleteHabit(wsId, id), () => existing);
           case "study":
-            return await commit({ deletes: [id] }, () => deleteStudySession(wsId, id), () => existing);
+            return await commit({ deletes: [id] }, () => deleteStudySession(wsId, id), () => existing, "study");
           case "fitness":
           case "shopping":
             return await commit({ deletes: [id] }, () => deleteRecord(wsId, id), () => existing);

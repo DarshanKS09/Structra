@@ -19,7 +19,8 @@ import { toDataError, DataError, type DataErrorCode } from "@/lib/data/errors";
 import type { AsyncStatus } from "@/lib/data/types";
 import type { TaskAnalytics } from "@/lib/data/analytics";
 import type { StudyAnalytics } from "@/lib/data/studyAnalytics";
-import { markReminderSent, type ReminderRow } from "@/lib/data/reminders";
+import { listDueReminders, markReminderSent, type ReminderRow } from "@/lib/data/reminders";
+import { useTaskStore } from "@/store/useTaskStore";
 import type { ListItem, ListMode } from "@/types/taskTypes";
 
 /**
@@ -104,6 +105,14 @@ export function useDashboard(): DashboardState {
   const [dueReminders, setDueReminders] = useState<ReminderRow[]>([]);
   const [groceryHistoryCount, setGroceryHistoryCount] = useState(0);
 
+  // Shared task-change signal. Announced on confirmed writes so the Task Centre and
+  // the analytics pages re-read without a manual refresh.
+  const bumpTaskRevision = useTaskStore((state) => state.bumpTaskRevision);
+  const taskRevision = useTaskStore((state) => state.taskRevision);
+  // Set to the revision value this hook is about to create, so the effect above
+  // can tell "someone else changed tasks" from "I changed them".
+  const ownRevision = useRef<number | null>(null);
+
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -152,6 +161,26 @@ export function useDashboard(): DashboardState {
     void load();
   }, [enabled, load]);
 
+  /**
+   * Re-read the Dashboard when a task is written somewhere else.
+   *
+   * Without this, completing a task in the Task Centre left the Dashboard's
+   * snapshot stale, so the counts, priority bands and analytics cards showed the
+   * state from before the write until the page was reloaded.
+   *
+   * `ownRevision` suppresses the echo of a write this hook itself made: `complete`
+   * already re-reads directly after a successful write, and reacting to its own
+   * signal as well would fetch the whole snapshot twice for one click.
+   */
+  useEffect(() => {
+    if (!enabled) return;
+    if (ownRevision.current === taskRevision) {
+      ownRevision.current = null;
+      return;
+    }
+    void load();
+  }, [enabled, load, taskRevision]);
+
   // `now` is a dependency so "overdue" and "due today" stay correct if the tab
   // stays open across midnight, without the user having to reload.
   const [now, setNow] = useState(() => Date.now());
@@ -159,6 +188,43 @@ export function useDashboard(): DashboardState {
     const tick = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(tick);
   }, []);
+
+  // Why reminders need their own poll, on top of the clock above.
+  //
+  // `now` only recomputes labels on rows already in memory. A reminder whose
+  // fire instant passes while the tab sits open would therefore never surface
+  // until a manual reload - the reminder would be "stored persistently" and yet
+  // still not be delivered in-app.
+  //
+  // The re-read is deliberately narrow: one indexed query for THIS user's due
+  // reminders, not a second full dashboard snapshot. It is also skipped when
+  // there is nothing to do, and when the document is hidden, because a reminder
+  // arriving in a background tab is still shown the moment the user returns.
+  useEffect(() => {
+    if (!workspaceId || !userId) return;
+
+    let cancelled = false;
+
+    const poll = async () => {
+      // Hidden tabs do no useful work; this also stops the interval from
+      // competing with the tab the user is actually looking at.
+      if (typeof document !== "undefined" && document.hidden) return;
+      try {
+        const rows = await listDueReminders(workspaceId, { userId });
+        if (!cancelled) setDueReminders(rows);
+      } catch {
+        // A failed poll must never surface as an error: the last known list
+        // stays on screen and the next tick tries again. Reminders are
+        // advisory, so a transient network blip should not disturb the page.
+      }
+    };
+
+    const timer = setInterval(() => void poll(), 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [workspaceId, userId]);
 
   const views = useMemo<DashboardSectionView[]>(
     () =>
@@ -231,6 +297,17 @@ export function useDashboard(): DashboardState {
           if (mounted.current) setSections(before);
           return false;
         }
+        // Tell the other task surfaces BEFORE re-reading, so the Task Centre and
+        // the analytics pages start their own re-read in the same tick rather
+        // than after this hook's own (much larger) snapshot load finishes.
+        //
+        // Only on a confirmed write: announcing a failed one would make those
+        // views re-read and re-render state the database never accepted, which is
+        // precisely the contradictory-state bug this is meant to remove.
+        if (mode === "task" || mode === "study") {
+          ownRevision.current = taskRevision + 1;
+          bumpTaskRevision();
+        }
         // Re-read so the summary counts and the priority order reflect what the
         // database now holds rather than the local guess.
         await load();
@@ -245,7 +322,10 @@ export function useDashboard(): DashboardState {
         if (mounted.current) setPendingWrites((n) => Math.max(0, n - 1));
       }
     },
-    [sections, load]
+    // `taskRevision` is read only to predict the value this write will produce,
+    // so it is listed for correctness; `ownRevision` is a ref and needs no
+    // dependency.
+    [sections, load, bumpTaskRevision, taskRevision]
   );
 
   /**

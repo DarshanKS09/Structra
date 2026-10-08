@@ -108,7 +108,7 @@ export function ItemCard({ item, onToggle, onDelete, onEdit }: Props) {
                 <button
                   type="button"
                   onClick={onDelete}
-                  className="h-8 rounded-lg bg-rose-500 px-3 text-[11px] font-semibold text-white transition hover:bg-rose-400"
+                  className="h-8 rounded-lg bg-rose-600 px-3 text-[11px] font-semibold text-white transition hover:bg-rose-500"
                 >
                   Delete
                 </button>

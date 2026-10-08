@@ -266,7 +266,14 @@ export const toTaskDraft: ModeDrafts["task"] = (item) => ({
   // passed through rather than re-parsed. `fromDateTimeInputValue` also accepts
   // a bare `YYYY-MM-DD`, which keeps a legacy date-only value writable.
   due_at: fromDateTimeInputValue(item.dueDate),
-  reminder_offset_minutes: item.reminderOffsetMinutes ?? null
+  // `REMINDER.NONE` is 0, so a plain `?? null` would let a 0 through - and the
+  // column's CHECK constraint starts at 1, so 0 would be rejected as an invalid
+  // reminder rather than meaning "no reminder". Normalising here keeps the
+  // sentinel and the database in agreement.
+  reminder_offset_minutes:
+    !item.reminderOffsetMinutes || item.reminderOffsetMinutes < 1
+      ? null
+      : item.reminderOffsetMinutes
 });
 
 export const toGroceryDraft: ModeDrafts["grocery"] = (item) => ({

@@ -1,6 +1,6 @@
 import Head from "next/head";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GetServerSideProps } from "next";
 import { AnimatePresence, motion } from "framer-motion";
 import { AddItemModal } from "@/components/AddItemModal";
@@ -20,13 +20,12 @@ import { useDashboard } from "@/lib/hooks/useDashboard";
 import { useModeItems } from "@/lib/hooks/useModeItems";
 import { Dashboard } from "@/components/Dashboard";
 import { NavBar } from "@/components/NavBar";
-import { QuickAdd } from "@/components/QuickAdd";
 import { completeItem } from "@/lib/dashboard/complete";
 import { completeGroceryList, ensureDefaultGroceryList } from "@/lib/data/groceries";
 import { toDataError } from "@/lib/data/errors";
-import { setTheme as persistTheme } from "@/lib/data/account";
 import type { ProfileRow, UserSettingsRow, WorkspaceWithRole } from "@/lib/data/types";
-import { type ThemeVariant, useTaskStore } from "@/store/useTaskStore";
+import { useTaskStore } from "@/store/useTaskStore";
+import { useThemeController } from "@/lib/hooks/useThemeController";
 import {
   type DraftByMode,
   type ListItem,
@@ -94,9 +93,7 @@ function HomeContent() {
     searchQuery,
     setSearchQuery,
     filter,
-    setFilter,
-    theme,
-    setTheme
+    setFilter
   } = useTaskStore();
 
   // The Dashboard is the landing screen, so it is not a `ListMode`. It renders
@@ -117,41 +114,35 @@ function HomeContent() {
 
   useEffect(() => setMounted(true), []);
 
+  // Appearance (Light / Dark, plus the dark accent) is owned by the one
+  // shared controller. This page no longer applies the theme class itself or
+  // mirrors it to `user_settings` - doing that in every page is what let the
+  // copies drift. `dark` stays on <html> for Tailwind's `dark:` utilities, which
+  // some components still use.
+  const { theme } = useThemeController();
   useEffect(() => {
     if (!mounted) return;
     document.documentElement.classList.add("dark");
     document.documentElement.classList.remove("light");
-    document.documentElement.classList.remove("theme-ocean", "theme-crimson", "theme-light");
-    document.documentElement.classList.add(`theme-${theme}`);
-  }, [theme, mounted]);
+  }, [mounted]);
 
-  // Mirror the theme into user_settings so it is available server-side later.
-  // Failure is intentionally ignored: a theme sync must never block the app.
+  // The theme pulse used to be driven by the header's cycle button. The theme is
+  // now changed from Profile -> Appearance, which lives in another component, so
+  // the pulse watches the resolved theme instead - the polish follows the
+  // setting to its new home instead of disappearing.
+  const isFirstTheme = useRef(true);
   useEffect(() => {
-    if (!user) return;
-    void persistTheme(user.id, theme as "ocean" | "crimson" | "light").catch(() => undefined);
-  }, [theme, user]);
+    if (isFirstTheme.current) {
+      isFirstTheme.current = false;
+      return;
+    }
+    setThemePulseId((prev) => prev + 1);
+  }, [theme]);
 
   const editingItem = useMemo(
     () => (editingItemId ? items.find((item) => item.id === editingItemId) : undefined),
     [editingItemId, items]
   );
-
-  const themeMeta: Record<ThemeVariant, { short: string; className: string }> = {
-    ocean: { short: "OC", className: "bg-sky-500 text-slate-950" },
-    crimson: { short: "CR", className: "bg-rose-500 text-white" },
-    light: { short: "LT", className: "bg-[#d0875c] text-amber-50" }
-  };
-
-  const cycleTheme = useCallback(() => {
-    const next: Record<ThemeVariant, ThemeVariant> = {
-      ocean: "crimson",
-      crimson: "light",
-      light: "ocean"
-    };
-    setTheme(next[theme]);
-    setThemePulseId((prev) => prev + 1);
-  }, [theme, setTheme]);
 
   const handleAddItem = useCallback(
     async <M extends ListMode>(mode: M, draft: DraftByMode[M]) => {
@@ -192,8 +183,6 @@ function HomeContent() {
    * existing ones, so a Dashboard-created item is written by exactly the same
    * path as one created inside its section.
    */
-  const [quickAddMode, setQuickAddMode] = useState<ListMode | null>(null);
-  const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [finishingGrocery, setFinishingGrocery] = useState(false);
   const [groceryError, setGroceryError] = useState<string | null>(null);
 
@@ -344,9 +333,6 @@ function HomeContent() {
               <NavBar
                 view={view}
                 onNavigate={setView}
-                themeLabel={themeMeta[theme].short}
-                themeClassName={themeMeta[theme].className}
-                onCycleTheme={cycleTheme}
               />
               <Dashboard
                 sections={dashboard.sections}
@@ -377,30 +363,19 @@ function HomeContent() {
                   </button>
                 </div>
               ) : null}
-              {/* Quick add: choose a section, reuse the existing modal and the
-                  existing create path, so the row lands in the right table and
-                  the Dashboard picks it up on its next read. */}
-              <FloatingAddButton onClick={openAddModal} inline />
-              <QuickAdd
-                open={quickAddOpen}
-                onPick={(mode) => {
-                  setQuickAddOpen(false);
-                  setQuickAddMode(mode);
-                }}
-                onClose={() => setQuickAddOpen(false)}
-              />
-              {quickAddMode ? (
-                <AddItemModal
-                  mode={quickAddMode}
-                  isOpen={Boolean(quickAddMode)}
-                  onClose={() => setQuickAddMode(null)}
-                  onSubmit={async (mode, draft) => {
-                    const created = await handleAddItem(mode, draft);
-                    if (created) setQuickAddMode(null);
-                  }}
-                  onUpdate={handleUpdateItem}
-                />
-              ) : null}
+              {/*
+                The Dashboard's trailing "Add New Item" button has been removed.
+
+                The Dashboard is a decision screen: it says what needs attention
+                and links to the relevant section. Creating an item is a decision
+                made inside that item's own section, where the right fields and
+                validation live - and every section still has its own add
+                control, which is untouched.
+
+                The quick-add sheet that used to sit alongside it was already
+                unreachable (`quickAddOpen` was never set true anywhere), so
+                removing it takes out dead code rather than a working path.
+              */}
             </motion.div>
           ) : !selectedMode ? (
             <motion.div
@@ -424,9 +399,6 @@ function HomeContent() {
               <NavBar
                 view={view}
                 onNavigate={setView}
-                themeLabel={themeMeta[theme].short}
-                themeClassName={themeMeta[theme].className}
-                onCycleTheme={cycleTheme}
               />
 
               <ModeToolbar

@@ -12,10 +12,10 @@ import {
   type GroceryHistoryEntry
 } from "@/lib/data/groceries";
 import type { GroceryItemRow } from "@/lib/data/types";
-import { ProfileMenu } from "@/components/ProfileMenu";
 import { NavBar } from "@/components/NavBar";
 import { toDataError, type DataError } from "@/lib/data/errors";
 import { useTaskStore } from "@/store/useTaskStore";
+import { useThemeController } from "@/lib/hooks/useThemeController";
 
 /**
  * Grocery history.
@@ -45,8 +45,10 @@ function GroceryHistoryView() {
   const workspaceId = workspace?.id ?? null;
   const view = useTaskStore((s) => s.view);
   const setView = useTaskStore((s) => s.setView);
-  const theme = useTaskStore((s) => s.theme);
-  const setTheme = useTaskStore((s) => s.setTheme);
+  // Appearance is owned by the shared controller; the page only needs it to
+  // resolve the concrete theme. There is deliberately no theme control here -
+  // Profile -> Appearance is the only entry point.
+  useThemeController();
 
   const [entries, setEntries] = useState<GroceryHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -112,10 +114,6 @@ function GroceryHistoryView() {
     }
   }, [workspaceId, openId]);
 
-  const cycleTheme = useCallback(() => {
-    const next = { ocean: "crimson", crimson: "light", light: "ocean" } as const;
-    setTheme(next[theme]);
-  }, [theme, setTheme]);
 
   if (status === "unknown" || bootstrapping) {
     return (
@@ -135,9 +133,6 @@ function GroceryHistoryView() {
     );
   }
 
-  const themeClass =
-    theme === "ocean" ? "bg-sky-500" : theme === "crimson" ? "bg-rose-500" : "bg-[#d0875c]";
-  const themeShort = theme === "ocean" ? "OC" : theme === "crimson" ? "CR" : "LT";
   const open = entries.find((entry) => entry.list.id === openId);
 
   return (
@@ -151,9 +146,6 @@ function GroceryHistoryView() {
         <NavBar
           view={view}
           onNavigate={setView}
-          themeLabel={themeShort}
-          themeClassName={`${themeClass} text-slate-950`}
-          onCycleTheme={cycleTheme}
         />
 
         <header className="flex items-center justify-between gap-3">
@@ -163,7 +155,6 @@ function GroceryHistoryView() {
               Every finished trip, kept with its items
             </p>
           </div>
-          <ProfileMenu />
         </header>
 
         {error ? (

@@ -88,8 +88,23 @@ const requireUserId = async (req: NextApiRequest, res: NextApiResponse): Promise
 };
 
 /**
- * POST - returns a short-lived signed upload URL for `<caller id>/avatar.<ext>`,
- * and tidies away any previous upload in a different format.
+ * A short random object name, minted SERVER-SIDE.
+ *
+ * The client never chooses the filename. Uniqueness is what lets a photo be
+ * replaced repeatedly: `createSignedUploadUrl` will not mint a token for an
+ * object that already exists, so reusing `<user id>/avatar.<ext>` made the first
+ * upload succeed and every later one fail with "Could not prepare the upload."
+ */
+const newObjectToken = (): string => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+};
+
+/**
+ * POST - returns a short-lived signed upload URL for a NEW object inside the
+ * caller's own folder.
  */
 async function handleMint(req: NextApiRequest, res: NextApiResponse): Promise<void> {
   const contentType = readString(req.body, "contentType").toLowerCase().trim();
@@ -121,65 +136,12 @@ async function handleMint(req: NextApiRequest, res: NextApiResponse): Promise<vo
   // `contentType` matched the allow-list above, so this always hits; the
   // fallback only satisfies the type checker.
   const extension = EXTENSION_BY_TYPE[contentType] ?? "bin";
-  // Path built from the VERIFIED id and the fixed extension table.
-  const path = `${userId}/avatar.${extension}`;
+  // Path built from the VERIFIED id, a server-minted unique token, and the fixed
+  // extension table. The client contributes no path component at all.
+  const path = `${userId}/${newObjectToken()}.${extension}`;
 
   try {
     const bucket = createAdminClient().storage.from(BUCKET);
-
-    // Drop a previous upload in another format, so switching between e.g. PNG
-    // and JPEG does not leave an orphan behind. Best-effort: a leftover object
-    // is inert and must not block the save the user asked for.
-    // Drop a previous upload in another format, so switching between e.g. PNG
-    // and JPEG does not leave an orphan behind.
-    //
-    // Two things are protected from deletion:
-    //   - the object about to be written, obviously;
-    //   - the object the profile currently points at.
-    //
-    // The second matters because a ticket can be minted and then abandoned -
-    // client-side validation fails, the user cancels, the network drops. If
-    // cleanup ran purely on "anything that is not the new path", an abandoned
-    // attempt would delete the photo the user actually has, leaving them with
-    // none at all. The profile row is the source of truth for what is live, so
-    // that path is read back before anything is removed.
-    //
-    // NOTE the asymmetry, which is easy to get wrong: `list(folder)` returns
-    // names RELATIVE to that folder ("avatar.png"), while `remove` needs the
-    // FULL object path ("<user id>/avatar.png"). Passing the relative name
-    // resolves to nothing and the delete silently no-ops, so the prefix is
-    // re-added here.
-    const siblings = await bucket
-      .list(userId)
-      .then((result) => (result.data ?? []).map((entry) => entry.name))
-      .catch(() => [] as string[]);
-
-    const live = await createAdminClient()
-      .from("profiles")
-      .select("avatar_url")
-      .eq("id", userId)
-      .maybeSingle()
-      .then((result) => {
-        // The live object name, taken from `profiles.avatar_url` so the cleanup
-        // below can never remove what the profile currently points at. Null
-        // when the avatar is a built-in, absent, or not one of ours.
-        const url = result.data?.avatar_url ?? "";
-        const marker = `/${BUCKET}/`;
-        const at = url.indexOf(marker);
-        if (at < 0) return null;
-        // `list` yields names relative to the folder, so compare basenames.
-        const name = decodeURIComponent(url.slice(at + marker.length)).split("/").pop() ?? "";
-        return name.length > 0 ? name : null;
-      })
-      .then(null, () => null);
-
-    const keep = new Set([`avatar.${extension}`, live]);
-    const stale = siblings
-      .filter((name) => !keep.has(name))
-      .map((name) => (name.startsWith(`${userId}/`) ? name : `${userId}/${name}`));
-    if (stale.length > 0) {
-      await bucket.remove(stale).catch(() => undefined);
-    }
 
     const { data, error } = await bucket.createSignedUploadUrl(path);
     if (error || !data?.token) {

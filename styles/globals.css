@@ -64,15 +64,62 @@ body {
 .theme-crimson {
   --accent: #fb7185;
   --accent-2: #f43f5e;
-  --accent-on: #fff1f2;
+  /*
+    Dark ink on the pale rose accent, at 5.8:1.
+    This was `#fff1f2` (near-white), which measured 2.45:1 against `#fb7185` -
+    unreadable on every accent-filled button in the Crimson dark theme. Ocean
+    already paired a pale accent with dark text; Crimson did not, which is why
+    only one of the two colours was legible.
+  */
+  --accent-on: #4c0519;
   --accent-shadow: rgba(244, 63, 94, 0.3);
 }
 
+/*
+  APPEARANCE vs COLOUR
+  --------------------
+  `theme-*` decides bright or dark surfaces. `accent-*` decides the colour, and
+  is applied independently, so all four combinations are distinct:
+
+    theme-light  + accent-ocean    theme-light  + accent-crimson
+    theme-ocean  + accent-ocean    theme-crimson + accent-crimson
+
+  Previously the colour only existed as two whole dark themes, so the light
+  appearance hardcoded one warm accent and choosing Crimson while in Light did
+  nothing. That made the colour control a half-truth, so light now carries both
+  accents too.
+
+  The light accents are deliberately DARKER than the dark-theme accents (cyan-700 /
+  rose-700 rather than sky-400 / rose-400). On a light surface a pale accent
+  cannot carry readable button text, and `--accent-on` stays near-white so white
+  text on an accent-filled button keeps a comfortable contrast ratio.
+*/
 .theme-light {
-  --accent: #d0875c;
-  --accent-2: #c9734a;
-  --accent-on: #fff7ed;
-  --accent-shadow: rgba(201, 115, 74, 0.28);
+  --accent: #0e7490;
+  --accent-2: #0891b2;
+  --accent-on: #ecfeff;
+  --accent-shadow: rgba(14, 116, 144, 0.28);
+}
+
+.theme-light.accent-crimson {
+  --accent: #be123c;
+  --accent-2: #e11d48;
+  --accent-on: #fff1f2;
+  --accent-shadow: rgba(190, 18, 60, 0.26);
+}
+
+/*
+  Dark accents keep their existing values, but stating them per-accent means the
+  dark themes and the light theme are built the same way. `.theme-ocean` and
+  `.theme-crimson` above are therefore overridden only where the accent differs
+  from that theme's default, which keeps Ocean/Ocean and Crimson/Crimson - the
+  common cases - byte-identical to before.
+*/
+.theme-light.accent-ocean {
+  --accent: #0e7490;
+  --accent-2: #0891b2;
+  --accent-on: #ecfeff;
+  --accent-shadow: rgba(14, 116, 144, 0.28);
 }
 
 .themed-item {
@@ -96,16 +143,48 @@ body {
   border-color: rgba(15, 23, 42, 0.14);
 }
 
-/* Light theme contrast tuning */
-.theme-light .text-slate-300,
-.theme-light .text-slate-200 {
+/* ---------------------------------------------------------------------------
+   LIGHT THEME CONTRAST
+   ---------------------------------------------------------------------------
+   The components are authored in the dark theme's slate ramp: `text-slate-100`
+   is primary, `400` is muted, `900` is body. On a light surface the same tokens
+   have to invert, or the UI is unreadable.
+
+   The previous version collapsed text-slate-400 through text-slate-900 onto one
+   colour, which was readable but destroyed the hierarchy: a muted caption and a
+   heading rendered identically. It also overrode `text-white`, which broke
+   white-on-coloured controls (the overdue pill on ItemCard is
+   `bg-rose-500 text-white`) by painting dark text onto a saturated background.
+
+   So the ramp is mapped, not flattened, and `text-white` is left alone because
+   white on a colour fill is correct in BOTH themes.
+
+   Ordering within the ramp mirrors the dark theme's intent, inverted for a
+   light background:
+     100/200/300  -> headings / strongest text
+     400          -> muted captions
+     500/600      -> secondary text
+     700/800/900  -> body and primary
+   --------------------------------------------------------------------------- */
+.theme-light .text-slate-100,
+.theme-light .text-slate-200,
+.theme-light .text-slate-300 {
+  color: #0f172a !important;
+}
+
+.theme-light .text-slate-400 {
+  color: #64748b !important;
+}
+
+.theme-light .text-slate-500 {
+  color: #475569 !important;
+}
+
+.theme-light .text-slate-600,
+.theme-light .text-slate-700 {
   color: #334155 !important;
 }
 
-.theme-light .text-slate-400,
-.theme-light .text-slate-500,
-.theme-light .text-slate-600,
-.theme-light .text-slate-700,
 .theme-light .text-slate-800,
 .theme-light .text-slate-900 {
   color: #1f2937 !important;
@@ -137,9 +216,12 @@ body {
   background-color: rgba(255, 247, 237, 0.58) !important;
 }
 
-.theme-light .text-white {
-  color: #1f2937 !important;
-}
+/*
+  `text-white` is deliberately NOT overridden.
+  It is used for white-on-a-colour-fill (the overdue pill), which must stay white
+  in the light theme too. Body-default text comes from `text-slate-100` on
+  <body>, which is handled above.
+*/
 
 .theme-light .bg-slate-900\/95,
 .theme-light .bg-slate-900\/85 {
