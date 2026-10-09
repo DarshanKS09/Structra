@@ -338,7 +338,7 @@ export const copyGroceryListItems = async (
       grocery_list_id: string;
       name: string;
       quantity: number | null;
-      unit: string | null;
+      unit: GroceryUnit | null;
       completed: boolean;
       notes: string | null;
     }> = [];

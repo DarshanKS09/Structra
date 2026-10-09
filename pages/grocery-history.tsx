@@ -8,6 +8,7 @@ import {
   getGroceryHistory,
   listGroceryItems,
   copyGroceryListItems,
+  describeCopyResult,
   ensureDefaultGroceryList,
   type GroceryHistoryEntry
 } from "@/lib/data/groceries";
@@ -45,6 +46,9 @@ function GroceryHistoryView() {
   const workspaceId = workspace?.id ?? null;
   const view = useTaskStore((s) => s.view);
   const setView = useTaskStore((s) => s.setView);
+  // Copying writes to the ACTIVE list, which the Grocery List section renders
+  // from its own copy of the data. This is how that section learns to re-read.
+  const bumpTaskRevision = useTaskStore((s) => s.bumpTaskRevision);
   // Appearance is owned by the shared controller; the page only needs it to
   // resolve the concrete theme. There is deliberately no theme control here -
   // Profile -> Appearance is the only entry point.
@@ -97,22 +101,29 @@ function GroceryHistoryView() {
     if (!workspaceId || !openId) return;
     setCopying(true);
     setError(null);
+    setNotice(null);
     try {
       const active = await ensureDefaultGroceryList(workspaceId);
-      const added = await copyGroceryListItems(openId, active.id);
-      // "0 added" is reported plainly rather than as a failure: everything was
-      // already on the current list, which is a valid outcome.
-      setNotice(
-        added === 0
-          ? "Nothing to copy — those unpurchased items are already on your current list."
-          : `Added ${added} item${added === 1 ? "" : "s"} to your current list.`
-      );
+      const result = await copyGroceryListItems(openId, active.id);
+
+      // The Grocery List section is a different page holding its own copy of the
+      // active list. Without this signal it would still be showing the pre-copy
+      // list when the user navigates back - and the obvious response to that
+      // would be to copy a second time, creating the duplicates this guards
+      // against.
+      bumpTaskRevision();
+
+      // The message is built from the copy's own counts rather than a generic
+      // "done", so "nothing new", "already there" and a genuine unit conflict
+      // each read differently. Silently collapsing them would make it impossible
+      // to tell a working reuse from a no-op.
+      setNotice(describeCopyResult(result));
     } catch (caught) {
       setError(toDataError(caught, "Could not copy that list."));
     } finally {
       setCopying(false);
     }
-  }, [workspaceId, openId]);
+  }, [workspaceId, openId, bumpTaskRevision]);
 
 
   if (status === "unknown" || bootstrapping) {

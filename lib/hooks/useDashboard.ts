@@ -19,7 +19,6 @@ import { toDataError, DataError, type DataErrorCode } from "@/lib/data/errors";
 import type { AsyncStatus } from "@/lib/data/types";
 import type { TaskAnalytics } from "@/lib/data/analytics";
 import type { StudyAnalytics } from "@/lib/data/studyAnalytics";
-import { listDueReminders, markReminderSent, type ReminderRow } from "@/lib/data/reminders";
 import { useTaskStore } from "@/store/useTaskStore";
 import type { ListItem, ListMode } from "@/types/taskTypes";
 
@@ -70,12 +69,14 @@ export type DashboardState = {
   taskAnalytics: TaskAnalytics | null;
   /** Study readout for the Study card. */
   studyAnalytics: StudyAnalytics | null;
-  /** Reminders that are due and not yet delivered. */
-  dueReminders: ReminderRow[];
-  /** How many finished grocery trips exist. */
+  /**
+   * How many finished grocery trips exist.
+   *
+   * Reminders are NOT here: they are persistent notification rows read by
+   * `useNotifications`, so they can exist without a Dashboard snapshot and
+   * without a browser tab open.
+   */
   groceryHistoryCount: number;
-  /** Acknowledges (hides) a delivered reminder. */
-  dismissReminder: (taskId: string) => Promise<void>;
   reload: () => Promise<void>;
   /**
    * Marks an item done: applied locally, then committed through `write`.
@@ -102,7 +103,6 @@ export function useDashboard(): DashboardState {
   const [pendingWrites, setPendingWrites] = useState(0);
   const [taskAnalytics, setTaskAnalytics] = useState<TaskAnalytics | null>(null);
   const [studyAnalytics, setStudyAnalytics] = useState<StudyAnalytics | null>(null);
-  const [dueReminders, setDueReminders] = useState<ReminderRow[]>([]);
   const [groceryHistoryCount, setGroceryHistoryCount] = useState(0);
 
   // Shared task-change signal. Announced on confirmed writes so the Task Centre and
@@ -134,7 +134,6 @@ export function useDashboard(): DashboardState {
       setSections(snapshot.sections);
       setTaskAnalytics(snapshot.taskAnalytics);
       setStudyAnalytics(snapshot.studyAnalytics);
-      setDueReminders(snapshot.dueReminders);
       setGroceryHistoryCount(snapshot.groceryHistoryCount);
       setError(
         snapshot.partial
@@ -189,42 +188,24 @@ export function useDashboard(): DashboardState {
     return () => clearInterval(tick);
   }, []);
 
-  // Why reminders need their own poll, on top of the clock above.
-  //
-  // `now` only recomputes labels on rows already in memory. A reminder whose
-  // fire instant passes while the tab sits open would therefore never surface
-  // until a manual reload - the reminder would be "stored persistently" and yet
-  // still not be delivered in-app.
-  //
-  // The re-read is deliberately narrow: one indexed query for THIS user's due
-  // reminders, not a second full dashboard snapshot. It is also skipped when
-  // there is nothing to do, and when the document is hidden, because a reminder
-  // arriving in a background tab is still shown the moment the user returns.
-  useEffect(() => {
-    if (!workspaceId || !userId) return;
-
-    let cancelled = false;
-
-    const poll = async () => {
-      // Hidden tabs do no useful work; this also stops the interval from
-      // competing with the tab the user is actually looking at.
-      if (typeof document !== "undefined" && document.hidden) return;
-      try {
-        const rows = await listDueReminders(workspaceId, { userId });
-        if (!cancelled) setDueReminders(rows);
-      } catch {
-        // A failed poll must never surface as an error: the last known list
-        // stays on screen and the next tick tries again. Reminders are
-        // advisory, so a transient network blip should not disturb the page.
-      }
-    };
-
-    const timer = setInterval(() => void poll(), 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [workspaceId, userId]);
+  /*
+   * The reminder poll that used to live here is GONE, and its removal is the point.
+   *
+   * It queried `tasks` for rows whose fire time had passed. Two things were wrong
+   * with that, and neither was fixable by polling harder:
+   *
+   *   1. It could only ever report reminders while a tab happened to be open. With
+   *      Structra closed, nothing was recorded anywhere, so the reminder did not
+   *      exist to be discovered later.
+   *
+   *   2. Its "Dismiss" wrote `tasks.reminder_sent_at` - the mail sweep's delivery
+   *      record. Acknowledging an in-app reminder therefore suppressed its email.
+   *
+   * Delivery is now the server scheduler's job: it writes a
+   * `task_notifications` row and sends the email. This hook only needs to notice
+   * rows that already exist, which `useNotifications` does. The `now` clock above
+   * still drives the "overdue"/"due today" labels and is unaffected.
+   */
 
   const views = useMemo<DashboardSectionView[]>(
     () =>
@@ -328,34 +309,18 @@ export function useDashboard(): DashboardState {
     [sections, load, bumpTaskRevision, taskRevision]
   );
 
-  /**
-   * Acknowledges a reminder.
+  /*
+   * Reminder acknowledgement was REMOVED from this hook, deliberately.
    *
-   * Writes `reminder_sent_at` so the reminder stops appearing - and, critically,
-   * stops being emailed by the scheduled sweep. Until this lands the row would
-   * keep reappearing on every Dashboard load, which is exactly the "duplicate
-   * reminders" failure.
+   * It used to write `tasks.reminder_sent_at` on dismiss. That column is the
+   * mail sweep's record of what has already gone out, so clicking "Dismiss" on
+   * an in-app reminder permanently suppressed that task's email. The user
+   * looking at a notification was cancelling a message they had not received.
+   *
+   * Acknowledging now lives in `useNotifications` and writes only
+   * `task_notifications.read_at` - the user's attention, and nothing else. The
+   * two concerns are separate columns on separate tables by design.
    */
-  const dismissReminder = useCallback(
-    async (taskId: string) => {
-      if (!workspaceId) return;
-      // Removed immediately: the user has already acted, so waiting for the
-      // write would leave a dismissed item on screen.
-      setDueReminders((current) => current.filter((row) => row.id !== taskId));
-      try {
-        await markReminderSent(workspaceId, taskId, new Date().toISOString());
-      } catch (caught) {
-        // Restore it so the user is not left believing it is dismissed when the
-        // database disagrees.
-        const snapshot = await loadDashboardSnapshot(workspaceId, userId ?? "").catch(
-          () => null
-        );
-        if (snapshot && mounted.current) setDueReminders(snapshot.dueReminders);
-        setError(toDataError(caught, "Could not dismiss that reminder."));
-      }
-    },
-    [workspaceId, userId]
-  );
 
   return {
     sections: views,
@@ -364,9 +329,7 @@ export function useDashboard(): DashboardState {
     totals,
     taskAnalytics,
     studyAnalytics,
-    dueReminders,
     groceryHistoryCount,
-    dismissReminder,
     status,
     error,
     isInitialLoading: status === "loading" && sections.length === 0,

@@ -86,7 +86,14 @@ alter table public.tasks
   add column if not exists reminder_notified_at timestamptz,
   add column if not exists reminder_emailed_at timestamptz,
   add column if not exists reminder_attempts integer not null default 0,
-  add column if not exists reminder_last_error text;
+  add column if not exists reminder_last_error text,
+  -- The concurrency claim. SET and CHECKED in the same UPDATE, so no two sweeps
+  -- can ever own one reminder. Separate from reminder_notified_at, which is
+  -- written later and would leave a window in which a second sweep re-claimed.
+  add column if not exists reminder_claimed_at timestamptz;
+
+comment on column public.tasks.reminder_claimed_at is
+  'Set when a dispatcher sweep claims this reminder for delivery. The claim and its guard are the same statement, so concurrent sweeps cannot both own one reminder. Cleared by the re-arm trigger when the schedule changes.';
 
 comment on column public.tasks.reminder_notified_at is
   'When the persistent in-app notification was created for this reminder. Independent of email: acknowledging a notification never touches this, and a failed email never resets it.';
@@ -115,11 +122,14 @@ create index if not exists tasks_reminder_due_idx
     and reminder_emailed_at is null
     and status <> 'done';
 
--- Supports "what is armed and undelivered" for the in-app read path.
-create index if not exists tasks_reminder_pending_notified_idx
+-- Supports the sweep's claim: rows due, open, unclaimed and not yet emailed.
+-- This is the index the dispatcher's WHERE clause actually rides, so it matches
+-- `reminder_claimed_at is null` rather than the notification write.
+create index if not exists tasks_reminder_claimable_idx
   on public.tasks (reminder_at)
   where reminder_offset_minutes is not null
-    and reminder_notified_at is null
+    and reminder_claimed_at is null
+    and reminder_emailed_at is null
     and status <> 'done';
 
 -- ---------------------------------------------------------------------------
@@ -239,13 +249,14 @@ select
     when t.status in ('done', 'archived') then 'cancelled'
     when t.reminder_emailed_at is not null then 'emailed'
     when t.reminder_last_error is not null then 'failed'
+    when t.reminder_claimed_at is not null and t.reminder_notified_at is null then 'notifying'
     when t.reminder_notified_at is not null then 'notified'
     else 'scheduled'
   end as reminder_status
 from public.tasks t;
 
 comment on view public.task_reminder_status is
-  'Per-task reminder delivery state, DERIVED from the timestamps so it cannot drift. Statuses: none, scheduled, notified, emailed, failed, cancelled. security_invoker so RLS on tasks applies.';
+  'Per-task reminder delivery state, DERIVED from the timestamps so it cannot drift. Statuses: none, scheduled, notifying (claimed, notification not yet written), notified, emailed, failed, cancelled. security_invoker so RLS on tasks applies.';
 
 -- ---------------------------------------------------------------------------
 -- tasks_maintain_reminder: keep the schedule correct and re-arm on change
@@ -289,6 +300,9 @@ begin
       new.reminder_notified_at := null;
       new.reminder_emailed_at := null;
       new.reminder_sent_at := null;
+      -- Releasing the claim is what makes the new schedule deliverable again;
+      -- leaving it set would make the reminder permanently un-deliverable.
+      new.reminder_claimed_at := null;
       new.reminder_attempts := 0;
       new.reminder_last_error := null;
     end if;

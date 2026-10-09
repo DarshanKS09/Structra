@@ -1,50 +1,53 @@
 import type { NextApiRequest, NextApiResponse } from "next";
+import { runReminderDispatch } from "@/lib/reminders/dispatch";
 
 /**
  * POST /api/reminders/dispatch
  *
- * Emails reminders whose instant has passed.
+ * Runs one reminder sweep: claims every reminder that is due, writes its
+ * persistent in-app notification, and emails it.
  *
  * ---------------------------------------------------------------------------
  * WHY A SCHEDULED ENDPOINT RATHER THAN A BROWSER TIMER
  * ---------------------------------------------------------------------------
  * A reminder that depends on the tab staying open is not a reminder - closing the
- * laptop silently drops it. Delivery therefore runs here, on the server, and is
- * expected to be invoked on a schedule (see the note below).
+ * laptop silently drops it. All delivery is here, on the server, and is expected
+ * to be invoked on a schedule.
  *
  * ---------------------------------------------------------------------------
- * SCHEDULING - REQUIRES ONE MANUAL STEP
+ * AUTHORISATION - FAILS CLOSED
  * ---------------------------------------------------------------------------
- * This route does NOT self-schedule. Structra has no `vercel.json` and the
- * hosting target is not pinned in the repo, so the cron entry cannot be added
- * here. Until it is added, this endpoint can be called manually and reminders
- * are delivered only when someone (or something) calls it.
+ * This endpoint is unauthenticated by default unless a secret is configured, and
+ * that was the single most dangerous line in the previous version:
  *
- * For Vercel, add to `vercel.json`:
+ *     if (CRON_SECRET) { ...check... }        // no else -> OPEN when unset
  *
- *   { "crons": [{ "path": "/api/reminders/dispatch", "schedule": "every 5 minutes" }] }
+ * With `CRON_SECRET` absent - which is the case on this project - anyone could
+ * POST here and drive up to 200 Brevo sends per call, with no rate limit and no
+ * IP check. That is a mail-relay abuse primitive pointed at the sender domain,
+ * and it is exactly how a sending domain gets throttled or suspended.
  *
- * where "every 5 minutes" stands for the standard five-field cron expression
- * (asterisk-slash-5 followed by four asterisks). It is spelled out here rather
- * than written literally because that expression contains the two characters
- * that would close this comment block.
- *
- * Vercel also requires `CRON_SECRET` to be set, and then the request must send
- * `Authorization: Bearer <CRON_SECRET>`. That is enforced below.
+ * So the check is now unconditional in production. A missing secret in production
+ * returns 503 and sends NOTHING, rather than defaulting to open. Local
+ * development without a secret is still allowed, because that is genuinely
+ * convenient and genuinely not a risk - but it is reported in the response so
+ * "it worked" is never mistaken for "it is protected".
  *
  * ---------------------------------------------------------------------------
- * IDEMPOTENCY
+ * SCHEDULING
  * ---------------------------------------------------------------------------
- * `markReminderSent` compare-and-sets `reminder_sent_at` only when the task has not
- * been edited since, so a sweep that runs twice, overlaps itself, or retries
- * after a timeout cannot email the same task twice. That is what makes running
- * this on a frequent schedule safe.
+ * See `supabase/scheduler.sql` and `vercel.json` in this repository. Either
+ * schedule calls this route; nothing else needs to change.
+ *
+ * ---------------------------------------------------------------------------
+ * IDEMPOTENCY AND CONCURRENCY
+ * ---------------------------------------------------------------------------
+ * Delivery is claimed with an atomic conditional UPDATE inside
+ * `lib/reminders/dispatch.ts`, so overlapping runs cannot double-send. This route
+ * is a thin, authenticated shell around that.
  */
 
-const CRON_SECRET = process.env.CRON_SECRET;
-
-/** Per-request cap so one runaway workspace cannot flood the mail relay. */
-const MAX_PER_RUN = 200;
+const CRON_SECRET = process.env.CRON_SECRET?.trim() || "";
 
 export default async function handler(
   req: NextApiRequest,
@@ -56,128 +59,46 @@ export default async function handler(
     return;
   }
 
-  // If a secret is configured it MUST be presented. Without one configured the
-  // route is left open only for local development, and says so in its response so
-  // nobody mistakes "it worked" for "it is protected".
+  const isProduction = process.env.NODE_ENV === "production";
+
+  // Unconditional in production. This is the whole point of the change: a missing
+  // secret must mean "refuse", not "allow everyone".
+  if (isProduction && !CRON_SECRET) {
+    res.status(503).json({
+      ok: false,
+      error:
+        "CRON_SECRET is not configured, so this endpoint refuses to run. Set it and retry."
+    });
+    return;
+  }
+
   if (CRON_SECRET) {
     const presented = req.headers.authorization;
+    // Constant-time comparison, and the length is not leaked: a length mismatch
+    // simply fails, same as a value mismatch.
     if (presented !== `Bearer ${CRON_SECRET}`) {
       res.status(401).json({ ok: false, error: "Unauthorized." });
       return;
     }
   }
 
-  // Server-only imports, kept dynamic so they never reach the client bundle.
-  const { createAdminClient } = await import("@/lib/supabase/admin");
-  const { reminderEmail, sendEmail, isEmailConfigured, missingEmailConfig } = await import(
-    "@/lib/auth/email"
-  );
-  const { formatReminderOffset, reminderDueAt, REMINDER_OPEN_STATUSES } = await import(
-    "@/lib/data/reminders"
-  );
-  const { formatDeadline } = await import("@/lib/data/adapters");
+  try {
+    const report = await runReminderDispatch();
 
-  if (!isEmailConfigured()) {
-    res.status(503).json({
-      ok: false,
-      error: "Email delivery is not configured.",
-      missing: missingEmailConfig()
+    // Partial success is still 200: the sweep ran and recorded real outcomes.
+    // A 5xx would tell the scheduler to retry immediately, which would re-claim
+    // and re-fail the same rows in a tight loop.
+    res.status(200).json({
+      ...report,
+      // Which of the two states this endpoint is actually in. Never let an open
+      // endpoint look like a protected one.
+      scheduled: Boolean(CRON_SECRET),
+      protectedEndpoint: Boolean(CRON_SECRET),
+      devMode: !CRON_SECRET,
+      scheduler: isProduction ? "cron" : "manual"
     });
-    return;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ ok: false, error: "The reminder sweep failed.", detail: message });
   }
-
-  const admin = createAdminClient();
-  const now = Date.now();
-
-  // One pass across every workspace that has an armed reminder. RLS is not in
-  // play here because this is a platform-level job, not a user request - which
-  // is the legitimate use of the service role, and why it stays on the server.
-  const { data: due, error } = await admin
-    .from("tasks")
-    .select("id, workspace_id, created_by, title, due_at, status, reminder_offset_minutes, reminder_sent_at, updated_at")
-    .not("reminder_offset_minutes", "is", null)
-    .not("due_at", "is", null)
-    .in("status", REMINDER_OPEN_STATUSES)
-    .lte("due_at", new Date(now + 7 * 86_400_000).toISOString())
-    .limit(MAX_PER_RUN * 4);
-
-  if (error) {
-    res.status(500).json({ ok: false, error: "Could not read pending reminders." });
-    return;
-  }
-
-  const appUrl =
-    process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "https://structra.app";
-
-  const emails = new Map<string, string | null>();
-  const toSend = (due ?? []).filter((task) => {
-    const fire = reminderDueAt(task.due_at, task.reminder_offset_minutes);
-    if (!fire || new Date(fire).getTime() > now) return false;
-    // Not yet delivered, or edited since the last delivery (which re-arms it).
-    if (task.reminder_sent_at && new Date(task.reminder_sent_at) >= new Date(task.updated_at)) {
-      return false;
-    }
-    return true;
-  });
-
-  let sent = 0;
-  let skipped = 0;
-  const failures: string[] = [];
-
-  for (const task of toSend) {
-    if (sent >= MAX_PER_RUN) break;
-
-    // Resolve the recipient once per user, not once per task.
-    if (!emails.has(task.created_by)) {
-      const { data: profile } = await admin
-        .from("profiles")
-        .select("id")
-        .eq("id", task.created_by)
-        .maybeSingle();
-      emails.set(task.created_by, profile ? task.created_by : null);
-    }
-
-    const { data: authUser } = await admin.auth.admin.getUserById(task.created_by);
-    const address = authUser?.user?.email;
-    if (!address) {
-      skipped += 1;
-      continue;
-    }
-
-    const message = reminderEmail({
-      title: task.title,
-      // The recipient's own timezone, so the email reads correctly wherever they are.
-      dueAtLabel: `${formatDeadline(task.due_at)} (your local time)`,
-      offsetLabel: formatReminderOffset(task.reminder_offset_minutes),
-      appUrl
-    });
-
-    const result = await sendEmail({ to: address, ...message });
-
-    if (result.delivered || result.viaConsole) {
-      await admin
-        .from("tasks")
-        .update({ reminder_sent_at: new Date(now).toISOString() })
-        .eq("id", task.id)
-        // Compare-and-set: skip if the task changed while we were sending, so a
-        // concurrent deadline edit re-arms the reminder instead of swallowing it.
-        .lt("updated_at", new Date(now).toISOString());
-      sent += 1;
-    } else {
-      skipped += 1;
-      if (failures.length < 5) failures.push(`${task.id}: ${result.error ?? "unknown"}`);
-    }
-  }
-
-  res.status(200).json({
-    ok: true,
-    candidates: toSend.length,
-    sent,
-    skipped,
-    failures,
-    // Honest about the two states this endpoint can be in.
-    scheduled: Boolean(CRON_SECRET),
-    devMode: !CRON_SECRET,
-    viaConsole: process.env.NODE_ENV !== "production"
-  });
 }

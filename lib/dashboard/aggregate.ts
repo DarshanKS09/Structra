@@ -5,7 +5,6 @@ import { listHabits } from "@/lib/data/habits";
 import { listGroceryHistory } from "@/lib/data/groceries";
 import { getTaskAnalytics, type TaskAnalytics } from "@/lib/data/analytics";
 import { getStudyAnalytics, type StudyAnalytics } from "@/lib/data/studyAnalytics";
-import { listDueReminders, type ReminderRow } from "@/lib/data/reminders";
 import { listStudySessions, listStudySubjects } from "@/lib/data/study";
 import { ensureRecordType, listRecords, BUILT_IN_RECORD_TYPES } from "@/lib/data/records";
 import {
@@ -73,8 +72,11 @@ export type DashboardSnapshot = {
   taskAnalytics: TaskAnalytics | null;
   /** Study time readout, scoped to the signed-in user. */
   studyAnalytics: StudyAnalytics | null;
-  /** Reminders whose instant has passed and that have not been delivered. */
-  dueReminders: ReminderRow[];
+  /**
+   * Reminders are deliberately absent. They are persistent
+   * `task_notifications` rows owned by `useNotifications`, not a value derived
+   * while building this snapshot - see the note beside the Promise.all below.
+   */
   /** How many finished grocery trips are kept as history. */
   groceryHistoryCount: number;
 };
@@ -274,11 +276,20 @@ export const loadDashboardSnapshot = async (
     buckets
   }));
 
-  const [taskAnalytics, studyAnalytics, dueReminders, groceryHistoryCount] = await Promise.all([
+  /*
+   * Reminders were removed from this snapshot.
+   *
+   * They were derived here by scanning `tasks` for rows whose fire time had
+   * passed, which meant a reminder could only ever be seen if this query ran -
+   * i.e. if a tab was open. It also meant acknowledging one wrote the delivery
+   * record and suppressed its own email. Both are now handled where they belong:
+   * the server dispatcher writes `task_notifications` rows, and `useNotifications`
+   * reads them. Keeping the read out of the snapshot is what lets a notification
+   * exist with no browser open at all.
+   */
+  const [taskAnalytics, studyAnalytics, groceryHistoryCount] = await Promise.all([
     getTaskAnalytics(workspaceId).catch(() => null),
     getStudyAnalytics(workspaceId, userId).catch(() => null),
-    // Only the caller's own tasks can raise a reminder for them.
-    listDueReminders(workspaceId, { userId }).catch(() => [] as ReminderRow[]),
     listGroceryHistory(workspaceId, 100).then((lists) => lists.length).catch(() => 0)
   ]);
 
@@ -288,7 +299,6 @@ export const loadDashboardSnapshot = async (
     failed: results.filter((r) => r.failed).map((r) => r.mode),
     taskAnalytics,
     studyAnalytics,
-    dueReminders,
     groceryHistoryCount
   };
 };

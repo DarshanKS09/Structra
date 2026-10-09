@@ -115,57 +115,84 @@ export const formatDeadline = (iso: string | null): string => {
 };
 
 /** `3720` -> `"1h 2m"`, `1800` -> `"30 min"`. */
+/**
+ * The single duration display format, applied everywhere a study duration is
+ * shown.
+ *
+ * ONE format on purpose: the Study Planner list, the Dashboard and Study
+ * Analytics all render through this, so a session reads the same wherever it is
+ * encountered. `1 hr`, `1 hr 30 min`, `2 hr`, `30 min`.
+ *
+ * It takes SECONDS. That is stated in the parameter name because passing minutes
+ * here is exactly the bug that made 60 minutes display as "1 min" - the value was
+ * divided by 60 a second time. Convert with `minutesToSeconds` on the way in and
+ * `secondsToMinutes` on the way out; never hand this a minutes value.
+ */
 export const formatDuration = (seconds: number | null): string => {
-  if (seconds === null || seconds <= 0) return "0 min";
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.round((seconds % 3600) / 60);
+  if (seconds === null || !Number.isFinite(seconds) || seconds <= 0) return "0 min";
+  const totalMinutes = secondsToMinutes(seconds);
+  if (totalMinutes <= 0) return "0 min";
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
   if (hours === 0) return `${minutes} min`;
-  if (minutes === 0) return `${hours}h`;
-  return `${hours}h ${minutes}m`;
+  if (minutes === 0) return `${hours} hr`;
+  return `${hours} hr ${minutes} min`;
 };
 
+/** Longest single session accepted, in minutes (one year). */
+export const MAX_STUDY_MINUTES = 366 * 24 * 60;
+
 /**
- * Parses a typed study duration into seconds.
+ * Converts a duration MINUTES value into whole seconds.
  *
- * `estimatedStudyTime` is a free-text field ("45 min", "2h", "1 h 30 m"), and the
- * user edits it expecting it to change their study time. Until now it was parsed
- * nowhere and simply discarded, which is why editing study hours had no effect.
- *
- * Returns `null` when the text holds no recognisable duration, so a caller can
- * distinguish "no duration given" from "zero minutes" - they mean different
- * things, and collapsing them to 0 would silently create zero-length sessions.
- *
- * `formatDuration` is the exact inverse for anything it produces, so a value read
- * back out of the database round-trips into the same text.
+ * The ONLY place minutes become seconds. Kept as a named function so the
+ * conversion is greppable, and so nobody re-derives it inline.
  */
-export const parseStudyDuration = (value: string | null | undefined): number | null => {
-  const text = String(value ?? "").trim().toLowerCase();
-  if (!text) return null;
+export const minutesToSeconds = (minutes: number): number => Math.round(minutes * 60);
 
-  // Reject anything that is not a duration at all, so a stray word cannot become
-  // NaN and then propagate into a timestamp.
-  if (!/\d/.test(text)) return null;
+/** Converts stored SECONDS into whole minutes, rounded to the nearest minute. */
+export const secondsToMinutes = (seconds: number): number =>
+  Math.max(0, Math.round(seconds / 60));
 
-  const hours = /(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b/.exec(text);
-  const mins = /(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b/.exec(text);
+/**
+ * Validates a duration entered as a number plus a unit.
+ *
+ * Rejects everything the requirement calls out - empty, zero, negative, fractional
+ * and out-of-range - and returns a message the user can act on rather than
+ * silently coercing the value. Silently rounding or defaulting is what allowed
+ * the original unit confusion to go unnoticed.
+ *
+ * `value` arrives as a string from an `<input type="number">`, so an empty field
+ * is `""`, not `0`.
+ */
+export const validateStudyDuration = (
+  value: unknown,
+  unit: "minutes" | "hours"
+): { ok: true; minutes: number } | { ok: false; message: string } => {
+  const raw = String(value ?? "").trim();
+  // `FormState` values can be boolean/other shapes, so the parameter is widened
+  // rather than casting at the call site.
+  if (raw === "") return { ok: false, message: "Enter how long you studied." };
 
-  let seconds = 0;
-  let matched = false;
-  if (hours) { seconds += Number(hours[1]) * 3600; matched = true; }
-  if (mins) { seconds += Number(mins[1]) * 60; matched = true; }
-
-  // A bare number is read as minutes, matching the field's "45 min" placeholder.
-  if (!matched) {
-    const bare = /^\s*(\d+(?:\.\d+)?)\s*$/.exec(text);
-    if (!bare) return null;
-    seconds = Number(bare[1]) * 60;
+  // Reject "12abc" and similar: Number() would give NaN, but explicit is safer
+  // than relying on that, and it keeps the message specific.
+  if (!/^\d+$/.test(raw)) {
+    return { ok: false, message: "Use a whole number of minutes or hours - no letters or decimals." };
   }
 
-  if (!Number.isFinite(seconds) || seconds <= 0) return null;
-  // A year is far beyond any plausible study session and would produce absurd
-  // timestamps, so it is treated as a typo rather than obeyed.
-  if (seconds > 366 * 24 * 3600) return null;
-  return Math.round(seconds);
+  const amount = Number(raw);
+  if (!Number.isFinite(amount)) {
+    return { ok: false, message: "Use a whole number of minutes or hours." };
+  }
+  if (amount <= 0) {
+    return { ok: false, message: "Enter a time greater than zero." };
+  }
+
+  const minutes = unit === "hours" ? amount * 60 : amount;
+  if (minutes > MAX_STUDY_MINUTES) {
+    return { ok: false, message: "That is longer than a year - check the number." };
+  }
+  return { ok: true, minutes: Math.round(minutes) };
 };
 
 /** Seconds elapsed since an instant, for a running session. */
@@ -235,7 +262,10 @@ export const studyRowToItem = (row: StudySessionRow, context: StudyContext): Stu
     mode: "study",
     subject: (row.subject_id && context.subjectNames.get(row.subject_id)) || "Study",
     topic: row.topic ?? (running ? "In progress" : ""),
+    // Both representations come from the SAME seconds value, so they can never
+    // disagree: one string for display, one number in MINUTES for the form.
     estimatedStudyTime: formatDuration(seconds),
+    durationMinutes: secondsToMinutes(seconds),
     completed: !running,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -293,7 +323,7 @@ export type ModeDrafts = {
   };
   grocery: (item: GroceryItem) => { name: string; quantity: number | null; unit: "kg" | "g" | "pieces" | "liters" | null };
   habit: (item: HabitItem) => { name: string; frequency: "daily" | "weekly" };
-  study: (item: StudyItem) => { topic: string; subject: string; durationSeconds: number | null };
+  study: (item: StudyItem) => { topic: string; subject: string; durationMinutes: number };
   fitness: (item: FitnessItem) => Record<string, unknown>;
   shopping: (item: ShoppingItem) => Record<string, unknown>;
   meeting: (item: MeetingItem) => { title: string; content: string };
@@ -355,10 +385,9 @@ export const toNoteDraft: ModeDrafts["meeting"] = (item) => ({
 export const toStudyDraft: ModeDrafts["study"] = (item) => ({
   subject: item.subject || "Study",
   topic: item.topic || "",
-  // The duration the user typed, in seconds. This field used to be dropped here
-  // entirely, which is why editing study hours changed nothing on disk while the
-  // UI reported success.
-  durationSeconds: parseStudyDuration(item.estimatedStudyTime)
+  // MINUTES - the single internal unit. The form validates and produces this; the
+  // data layer converts to seconds exactly once, when writing.
+  durationMinutes: item.durationMinutes
 });
 
 // ---------------------------------------------------------------------------

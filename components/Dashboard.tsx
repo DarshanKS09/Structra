@@ -7,7 +7,7 @@ import type { DashboardItem } from "@/lib/dashboard/prioritize";
 import type { DashboardSectionView } from "@/lib/hooks/useDashboard";
 import type { TaskAnalytics } from "@/lib/data/analytics";
 import type { StudyAnalytics } from "@/lib/data/studyAnalytics";
-import type { ReminderRow } from "@/lib/data/reminders";
+import type { ReminderNotification } from "@/lib/data/notifications";
 import {
   TaskProgressCard,
   StudyProgressCard,
@@ -182,9 +182,17 @@ type Props = {
   /** Analytics readouts. Null when that read failed, so the card is omitted. */
   taskAnalytics: TaskAnalytics | null;
   studyAnalytics: StudyAnalytics | null;
-  dueReminders: ReminderRow[];
+  reminders: ReminderNotification[];
   groceryHistoryCount: number;
-  onDismissReminder: (taskId: string) => void;
+  onDismissReminder: (notificationId: string) => void;
+  onDismissAllReminders: () => void;
+  /**
+   * Audible-alarm controls, owned by the page (which owns the AudioContext
+   * unlock) and passed down only so the card can offer a way to stop the noise.
+   * Optional so the Dashboard is still usable without the alarm.
+   */
+  alarmSounding?: boolean;
+  onStopAlarm?: () => void;
 };
 
 export function Dashboard({
@@ -197,9 +205,12 @@ export function Dashboard({
   isRefreshing,
   taskAnalytics,
   studyAnalytics,
-  dueReminders,
+  reminders,
   groceryHistoryCount,
-  onDismissReminder
+  onDismissReminder,
+  onDismissAllReminders,
+  alarmSounding,
+  onStopAlarm
 }: Props) {
   // Sections are split so the ones the user has not used do not crowd out the
   // ones holding real work.
@@ -339,7 +350,13 @@ export function Dashboard({
           statistic, and burying "you asked to be reminded about this" under
           charts would defeat it.
         */}
-      <ReminderCard reminders={dueReminders} onDismiss={onDismissReminder} />
+      <ReminderCard
+        reminders={reminders}
+        onDismiss={onDismissReminder}
+        onDismissAll={onDismissAllReminders}
+        alarmSounding={alarmSounding}
+        onStopAlarm={onStopAlarm}
+      />
 
       {/*
           Two compact cards, each answering one question and each linking to a

@@ -667,6 +667,16 @@ export type Database = {
           completed_at: string | null;
           reminder_offset_minutes: number | null;
           reminder_sent_at: string | null;
+          /**
+           * Added by 01400. Maintained by the `tasks_maintain_reminder` trigger;
+           * a client must never write it. Absent from Insert on purpose.
+           */
+          reminder_at: string | null;
+          reminder_claimed_at: string | null;
+          reminder_notified_at: string | null;
+          reminder_emailed_at: string | null;
+          reminder_attempts: number;
+          reminder_last_error: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -697,6 +707,22 @@ export type Database = {
           completed_at?: string | null;
           reminder_offset_minutes?: number | null;
           reminder_sent_at?: string | null;
+          /**
+           * The dispatcher records delivery outcomes through these. `reminder_at`
+           * is deliberately NOT here: it is trigger-maintained, so allowing a
+           * write would make it possible for a client to contradict the deadline.
+           */
+          /**
+           * Set and guarded in the SAME statement by the dispatcher's claim, so
+           * concurrent sweeps cannot both own one reminder. Cleared by the
+           * re-arm trigger when the schedule changes, and released on failure so
+           * a retry can take it again.
+           */
+          reminder_claimed_at?: string | null;
+          reminder_notified_at?: string | null;
+          reminder_emailed_at?: string | null;
+          reminder_attempts?: number | null;
+          reminder_last_error?: string | null;
           created_at?: string | null;
           updated_at?: string | null;
         };
@@ -714,6 +740,66 @@ export type Database = {
             isOneToOne: false,
             referencedRelation: "workspaces",
             referencedColumns: ["id"],
+          }
+        ];
+      };
+      task_notifications: {
+        Row: {
+          id: string;
+          workspace_id: string;
+          task_id: string;
+          user_id: string;
+          title: string;
+          body: string | null;
+          offset_minutes: number | null;
+          due_at: string | null;
+          created_at: string;
+          read_at: string | null;
+        };
+        Insert: {
+          id?: string | null;
+          workspace_id: string;
+          task_id: string;
+          user_id: string;
+          title: string;
+          body?: string | null;
+          offset_minutes?: number | null;
+          due_at?: string | null;
+          created_at?: string | null;
+          read_at?: string | null;
+        };
+        Update: {
+          workspace_id?: string | null;
+          task_id?: string | null;
+          user_id?: string | null;
+          title?: string | null;
+          body?: string | null;
+          offset_minutes?: number | null;
+          due_at?: string | null;
+          created_at?: string | null;
+          read_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "task_notifications_task_id_fkey";
+            columns: ["task_id"];
+            isOneToOne: false;
+            referencedRelation: "tasks";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "task_notifications_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "task_notifications_workspace_id_fkey";
+            columns: ["workspace_id"];
+            isOneToOne: false;
+            referencedRelation: "workspaces";
+            referencedColumns: ["id"];
           }
         ];
       };

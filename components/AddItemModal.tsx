@@ -1,7 +1,11 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { type DraftByMode, type ListItem, type ListMode, modeLabels } from "@/types/taskTypes";
-import { toDateTimeInputValue, fromDateTimeInputValue } from "@/lib/data/adapters";
+import {
+  toDateTimeInputValue,
+  fromDateTimeInputValue,
+  validateStudyDuration
+} from "@/lib/data/adapters";
 import {
   REMINDER_OPTIONS,
   REMINDER,
@@ -27,7 +31,7 @@ const defaults: Record<ListMode, FormState> = {
   task: { title: "", description: "", priority: "Medium", dueDate: "", reminderOffsetMinutes: REMINDER.NONE, completed: false },
   grocery: { itemName: "", quantity: "", unit: "pieces", purchased: false },
   habit: { habitName: "", frequency: "Daily", streak: 0, completed: false },
-  study: { subject: "", topic: "", estimatedStudyTime: "30 min", completed: false },
+  study: { subject: "", topic: "", durationValue: "30", durationUnit: "minutes", completed: false },
   fitness: { exerciseName: "", sets: 3, reps: 10, duration: "20 min", completed: false },
   shopping: { itemName: "", price: 0, priority: "Medium", purchased: false },
   meeting: { meetingTitle: "", participants: "", date: "", notes: "" }
@@ -61,13 +65,22 @@ const toDraft = <M extends ListMode>(mode: M, form: FormState): DraftByMode[M] =
         streak: Number(form.streak || 0),
         completed: Boolean(form.completed)
       } as DraftByMode[M];
-    case "study":
-      return {
-        subject: String(form.subject || ""),
-        topic: String(form.topic || ""),
-        estimatedStudyTime: String(form.estimatedStudyTime || ""),
-        completed: Boolean(form.completed)
-      } as DraftByMode[M];
+    case "study": {
+        /*
+         * The unit is chosen, not typed, so this is one multiplication rather than
+         * a guess. `validateStudyDuration` has already run by the time submit is
+         * reached; re-validating here keeps the draft honest even if it is ever
+         * built outside the form.
+         */
+        const unit = form.durationUnit === "hours" ? "hours" : "minutes";
+        const check = validateStudyDuration(form.durationValue, unit);
+        return {
+          subject: String(form.subject || ""),
+          topic: String(form.topic || ""),
+          durationMinutes: check.ok ? check.minutes : 0,
+          completed: Boolean(form.completed)
+        } as DraftByMode[M];
+      }
     case "fitness":
       return {
         exerciseName: String(form.exerciseName || ""),
@@ -109,6 +122,24 @@ export function AddItemModal({ mode, isOpen, editingItem, onClose, onSubmit, onU
       merged.dueDate = toDateTimeInputValue(editingItem.dueDate || null);
       merged.reminderOffsetMinutes = editingItem.reminderOffsetMinutes ?? REMINDER.NONE;
     }
+    if (mode === "study" && editingItem.mode === "study") {
+      /*
+       * Split the stored minutes into the number and unit the new controls show.
+       *
+       * Exact hours are shown as hours (60 -> "1" + Hours), and anything else as
+       * minutes (90 -> "90" + Minutes), so the number shown always equals the
+       * number stored - a prefill that quietly changed 60 minutes into "1 hour"
+       * would be a second source of the rounding surprise this field already had.
+       */
+      const minutes = Math.max(1, Math.round(editingItem.durationMinutes || 0));
+      const isWholeHours = minutes >= 60 && minutes % 60 === 0;
+      // The VALUE must match the UNIT. Writing "60" beside "Hours" would show
+      // 60 hours and silently multiply an hour-long session by 60 on the next
+      // save - the same class of bug this field was rebuilt to remove.
+      merged.durationValue = String(isWholeHours ? minutes / 60 : minutes);
+      merged.durationUnit = isWholeHours ? "hours" : "minutes";
+      merged.durationError = null;
+    }
     return merged;
   }, [editingItem, mode]);
   const [form, setForm] = useState<FormState>(initial);
@@ -137,6 +168,29 @@ export function AddItemModal({ mode, isOpen, editingItem, onClose, onSubmit, onU
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+
+    /*
+     * Validate the duration before building the draft.
+     *
+     * The number input carries `required` and `min={1}`, but that is a
+     * convenience: it does not stop a fractional value, and a browser can be
+     * configured to ignore form validation entirely. The data layer also rejects
+     * a non-positive duration, so this is the user-facing half of one rule, not
+     * the only half.
+     *
+     * The entered value is never coerced. An invalid entry shows why and stops
+     * here, rather than being quietly rounded into a different duration.
+     */
+    if (mode === "study") {
+      const unit = form.durationUnit === "hours" ? "hours" : "minutes";
+      const check = validateStudyDuration(form.durationValue, unit);
+      if (!check.ok) {
+        setForm((prev) => ({ ...prev, durationError: check.message }));
+        return;
+      }
+      setForm((prev) => ({ ...prev, durationError: null }));
+    }
+
     const draft = toDraft(mode, form);
     if (editingItem) {
       onUpdate(mode, editingItem.id, draft);
@@ -367,12 +421,43 @@ function Fields({
             value={String(form.topic || "")}
             onChange={(e) => setValue("topic", e.target.value)}
           />
-          <input
-            className={inputBaseClass}
-            placeholder="Estimated Study Time (e.g. 45 min)"
-            value={String(form.estimatedStudyTime || "")}
-            onChange={(e) => setValue("estimatedStudyTime", e.target.value)}
-          />
+          {/*
+            Duration: a NUMBER plus an explicit unit.
+
+            This used to be one free-text field ("45 min"), which left the unit
+            to be inferred from what the user typed. That ambiguity is what let a
+            minutes value reach a seconds-based formatter and print 60 minutes as
+            "1 min". With the unit chosen rather than typed, there is nothing left
+            to infer.
+          */}
+          <div className="flex gap-2">
+            <input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              step={1}
+              required
+              aria-label="Study duration"
+              placeholder="Duration"
+              className={inputBaseClass}
+              value={String(form.durationValue ?? "")}
+              onChange={(e) => setValue("durationValue", e.target.value)}
+            />
+            <select
+              aria-label="Duration unit"
+              className={`${inputBaseClass} w-28 shrink-0`}
+              value={String(form.durationUnit ?? "minutes")}
+              onChange={(e) => setValue("durationUnit", e.target.value)}
+            >
+              <option value="minutes">Minutes</option>
+              <option value="hours">Hours</option>
+            </select>
+          </div>
+          {form.durationError ? (
+            <p role="alert" className="text-[11px] text-rose-300 light:text-rose-600">
+              {String(form.durationError)}
+            </p>
+          ) : null}
         </>
       );
     case "fitness":

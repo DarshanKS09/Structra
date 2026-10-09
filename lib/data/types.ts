@@ -28,6 +28,7 @@ export type GroceryListRow = Tables<"grocery_lists">;
 export type GroceryItemRow = Tables<"grocery_items">;
 
 export type NoteRow = Tables<"notes">;
+export type TaskNotificationRow = Tables<"task_notifications">;
 
 /** Insert shapes. */
 export type ProfileInsert = TablesInsert<"profiles">;

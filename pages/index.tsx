@@ -18,6 +18,9 @@ import { TaskList } from "@/components/TaskList";
 import { LocalDataImport } from "@/components/LocalDataImport";
 import { AuthProvider, useAuth } from "@/lib/auth/AuthProvider";
 import { useDashboard } from "@/lib/hooks/useDashboard";
+import { useNotifications } from "@/lib/hooks/useNotifications";
+import { useReminderAlarm } from "@/lib/hooks/useReminderAlarm";
+import { readAlarmSettings } from "@/lib/reminders/alarm";
 import { useModeItems } from "@/lib/hooks/useModeItems";
 import { Dashboard } from "@/components/Dashboard";
 import { NavBar } from "@/components/NavBar";
@@ -82,7 +85,16 @@ function HomeContent() {
   const [mounted, setMounted] = useState(false);
   const [themePulseId, setThemePulseId] = useState(0);
 
-  const { status, user, profile, workspace, bootstrapping, error: authError, signOut } = useAuth();
+  const {
+    status,
+    user,
+    profile,
+    workspace,
+    settings,
+    bootstrapping,
+    error: authError,
+    signOut
+  } = useAuth();
 
   const {
     view,
@@ -105,6 +117,37 @@ function HomeContent() {
     view === "dashboard" || view === "modes" ? null : view;
 
   const dashboard = useDashboard();
+
+  /*
+   * Reminders come from persisted notification rows written by the server-side
+   * dispatcher, not from a query of due tasks.
+   *
+   * That distinction is the feature: a reminder raised while Structra was closed
+   * is already a row by the time the user comes back, and acknowledging one marks
+   * only that row read. The previous version derived the list from `tasks` and
+   * wrote `tasks.reminder_sent_at` on dismiss - the same column the mail sweep
+   * uses, so looking at a reminder silently cancelled its email.
+   */
+  const notifications = useNotifications(status === "authenticated" && !bootstrapping);
+
+  /*
+   * The audible alarm, driven by the SAME persisted reminder rows the banner shows.
+   *
+   * Deliberately not derived from `tasks`: the notifications table is the
+   * authoritative record of what has actually been raised, so the alarm and the
+   * banner can never disagree about what is due. It reads the user's preference
+   * from the same `user_settings.preferences` jsonb that Profile writes, which is
+   * why no migration was needed.
+   */
+  const alarmSettings = useMemo(
+    () => readAlarmSettings(settings?.preferences),
+    [settings?.preferences]
+  );
+  const { sounding: alarmSounding, stopSound: stopAlarm } = useReminderAlarm(
+    notifications.notifications,
+    alarmSettings,
+    alarmSettings.enabled
+  );
 
   /*
    * The selected section lives in the URL, not only in the store.
@@ -419,10 +462,18 @@ function HomeContent() {
                 isRefreshing={dashboard.status === "loading"}
                 taskAnalytics={dashboard.taskAnalytics}
                 studyAnalytics={dashboard.studyAnalytics}
-                dueReminders={dashboard.dueReminders}
+                reminders={notifications.notifications}
                 groceryHistoryCount={dashboard.groceryHistoryCount}
-                onDismissReminder={(taskId) => void dashboard.dismissReminder(taskId)}
+                onDismissReminder={(notificationId) => void notifications.dismiss(notificationId)}
+                onDismissAllReminders={() => void notifications.dismissAll()}
+        alarmSounding={alarmSounding}
+        onStopAlarm={stopAlarm}
               />
+              {notifications.error ? (
+                <p role="alert" className="text-xs text-rose-300 light:text-rose-700">
+                  {notifications.error.message}
+                </p>
+              ) : null}
               {dashboard.error ? (
                 <div
                   role="alert"

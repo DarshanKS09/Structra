@@ -18,6 +18,17 @@ import {
   validateAvatarFile
 } from "@/lib/profile/storage";
 import { useThemeController } from "@/lib/hooks/useThemeController";
+import {
+  ALARM_SOUNDS,
+  audioBlockedReason,
+  mergeAlarmSettings,
+  playAlarm,
+  readAlarmSettings,
+  unlockAudio,
+  type AlarmSettings,
+  type AlarmSound
+} from "@/lib/reminders/alarm";
+import { saveUserSettings } from "@/lib/data/account";
 import type { Appearance, DarkAccent } from "@/store/useTaskStore";
 
 /**
@@ -91,10 +102,69 @@ function InitialBadge({
  * only the resulting URL is written to the column.
  */
 export function ProfileMenu() {
-  const { user, profile, refresh, signOut } = useAuth();
+  const { user, profile, settings, refresh, signOut } = useAuth();
   // Appearance is read here and nowhere else in the UI, which is what keeps a
   // theme control from reappearing in a header.
   const { appearance, darkAccent, setAppearance, setDarkAccent } = useThemeController();
+
+  /*
+   * Alarm settings live in the existing `user_settings.preferences` jsonb column,
+   * so this needs no migration and no new table - it rides alongside the theme
+   * setting that is already stored there.
+   */
+  const [alarmSettings, setAlarm] = useState<AlarmSettings>(() =>
+    readAlarmSettings(settings?.preferences)
+  );
+
+  // Re-read when the server row changes (e.g. after refresh), so the control never
+  // shows a stale local edit.
+  useEffect(() => {
+    setAlarm(readAlarmSettings(settings?.preferences));
+  }, [settings?.preferences]);
+
+  const setAlarmSettings = useCallback(
+    async (patch: Partial<AlarmSettings>): Promise<void> => {
+      if (!user) return;
+      const previous = alarmSettings;
+      const next = { ...alarmSettings, ...patch };
+      // Optimistic: the switch should feel instant.
+      setAlarm(next);
+      try {
+        await saveUserSettings(user.id, {
+          preferences: mergeAlarmSettings(settings?.preferences, next) as never
+        });
+        await refresh();
+      } catch (caught) {
+        // Restore, so the control never claims a preference the server rejected.
+        setAlarm(previous);
+        setError(toDataError(caught, "Could not save that reminder setting."));
+      }
+    },
+    [alarmSettings, settings?.preferences, user, refresh]
+  );
+
+  /**
+   * "Test alarm" doubles as the audio unlock gesture.
+   *
+   * Browsers only allow sound after a real user interaction, and this click IS
+   * one - so pressing it is what grants permission, which is why the copy tells
+   * the user to try it once. A short preview is played rather than the full
+   * duration, and it stops itself.
+   */
+  const previewAlarm = useCallback(async (): Promise<void> => {
+    const unlocked = await unlockAudio();
+    if (!unlocked) {
+      setError(
+        new DataError(
+          "VALIDATION",
+          "This browser is blocking sound. Interact with the page and try again."
+        )
+      );
+      return;
+    }
+    setError(null);
+    playAlarm(alarmSettings.sound, 2);
+  }, [alarmSettings.sound]);
 
   const [open, setOpen] = useState(false);
   const [displayName, setDisplayName] = useState(profile?.display_name ?? "");
@@ -556,6 +626,89 @@ export function ProfileMenu() {
                 );
               })}
             </div>
+          </fieldset>
+
+          {/*
+            REMINDERS
+
+            Alarm sound lives in Profile rather than in a header, alongside the
+            theme control, because it is the same kind of preference: a setting
+            about how Structra behaves while you use it.
+
+            The audio caveat is stated in the UI itself rather than only in the
+            docs. Browsers refuse to play sound until the page has been interacted
+            with, and "Test alarm" doubles as the unlock gesture - so the first
+            press is what grants permission, and the copy says so.
+          */}
+          <fieldset className="mt-3">
+            <legend className="mb-1.5 text-[11px] text-slate-300 light:text-slate-600">
+              Reminder alarm
+            </legend>
+
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-white/20 px-3 py-2 light:border-slate-300">
+              <span className="text-xs">Play a sound when due</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={alarmSettings.enabled}
+                aria-label="Play a sound when a reminder is due"
+                onClick={() => void setAlarmSettings({ enabled: !alarmSettings.enabled })}
+                className={`h-6 w-11 shrink-0 rounded-full p-0.5 transition ${
+                  alarmSettings.enabled ? "themed-accent-solid" : "bg-white/20 light:bg-slate-300"
+                }`}
+              >
+                <span
+                  className={`block h-5 w-5 rounded-full bg-white transition-transform ${
+                    alarmSettings.enabled ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+
+            {alarmSettings.enabled ? (
+              <>
+                <div className="mt-2 flex items-center gap-1.5" role="group" aria-label="Alarm sound">
+                  {ALARM_SOUNDS.map((option) => {
+                    const isActive = alarmSettings.sound === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        title={option.description}
+                        aria-pressed={isActive}
+                        onClick={() => void setAlarmSettings({ sound: option.id })}
+                        className={`flex-1 rounded-lg border px-2 py-1.5 text-[11px] font-medium transition ${
+                          isActive
+                            ? "themed-accent-solid border-transparent"
+                            : "border-white/25 hover:border-white/50 light:border-slate-300"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void previewAlarm()}
+                  className="mt-2 h-9 w-full rounded-xl border border-white/25 text-xs font-medium transition hover:border-white/50 light:border-slate-300"
+                >
+                  Test alarm
+                </button>
+
+                {audioBlockedReason() ? (
+                  <p className="mt-1 text-[10px] text-amber-300 light:text-amber-700">
+                    {audioBlockedReason()}
+                  </p>
+                ) : null}
+              </>
+            ) : null}
+
+            <p className="mt-1.5 text-[10px] text-slate-400 light:text-slate-500">
+              The alarm needs Structra open. While it is closed, reminder emails are sent
+              instead - the browser cannot make a sound on its own.
+            </p>
           </fieldset>
 
           <div className="mt-4 flex items-center gap-2">

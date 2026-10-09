@@ -6,7 +6,7 @@ import { DonutChart } from "@/components/analytics/DonutChart";
 import { TrendBars, TrendLine } from "@/components/analytics/TrendCharts";
 import type { TaskAnalytics } from "@/lib/data/analytics";
 import type { StudyAnalytics } from "@/lib/data/studyAnalytics";
-import type { ReminderRow } from "@/lib/data/reminders";
+import type { ReminderNotification } from "@/lib/data/notifications";
 
 /**
  * The Dashboard's analytics cards.
@@ -262,12 +262,40 @@ export function GrocerySummaryCard({
  * client-side timer. It is honest about its limit - it surfaces while the app is
  * open, and the emailed copy is dispatched by the scheduled server job.
  */
+/**
+ * The reminder inbox.
+ *
+ * ---------------------------------------------------------------------------
+ * THESE ARE PERSISTED ROWS, NOT A LIVE QUERY
+ * ---------------------------------------------------------------------------
+ * This card used to render `tasks` rows whose fire time had passed, recomputed by
+ * a poll in whichever tab was open. It now renders notifications written by the
+ * server-side dispatcher, which is what makes three things true:
+ *
+ *   - A reminder raised while the app was closed is here on return.
+ *   - It survives a refresh, a logout and a login.
+ *   - "Dismiss" marks ONE notification read and touches nothing about email
+ *     delivery. Previously it wrote `tasks.reminder_sent_at`, which is the same
+ *     column the mail sweep uses - so acknowledging a reminder silently
+ *     suppressed its email. Reading a message was destroying a message.
+ *
+ * `dueAt` and `body` are copies taken when the reminder fired, so the card keeps
+ * showing the truth as it was even if the task is edited or deleted afterwards.
+ */
 export function ReminderCard({
   reminders,
-  onDismiss
+  onDismiss,
+  onDismissAll,
+  alarmSounding,
+  onStopAlarm
 }: {
-  reminders: ReminderRow[];
+  reminders: ReminderNotification[];
   onDismiss: (id: string) => void;
+  onDismissAll?: () => void;
+  /** True while the audible alarm is playing. */
+  alarmSounding?: boolean;
+  /** Stops the sound without acknowledging the reminders. */
+  onStopAlarm?: () => void;
 }) {
   if (reminders.length === 0) return null;
 
@@ -279,15 +307,37 @@ export function ReminderCard({
       aria-live="polite"
       className="rounded-3xl border border-amber-400/40 bg-amber-500/10 p-4 light:border-amber-300 light:bg-amber-100"
     >
-      <h2 className="mb-2 text-sm font-semibold text-amber-200 light:text-amber-800">
-        {reminders.length} task reminder{reminders.length === 1 ? "" : "s"}
-      </h2>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-amber-200 light:text-amber-800">
+          {reminders.length} task reminder{reminders.length === 1 ? "" : "s"}
+        </h2>
+        {/* Only offered while something is actually playing, and it stops the
+            sound WITHOUT dismissing: the reminder is still unread and still needs
+            the user's attention. */}
+        {alarmSounding && onStopAlarm ? (
+          <button
+            type="button"
+            onClick={onStopAlarm}
+            className="shrink-0 rounded-lg px-2 py-0.5 text-[11px] underline underline-offset-2"
+          >
+            Stop alarm
+          </button>
+        ) : onDismissAll && reminders.length > 1 ? (
+          <button
+            type="button"
+            onClick={onDismissAll}
+            className="shrink-0 rounded-lg px-2 py-0.5 text-[11px] underline underline-offset-2"
+          >
+            Dismiss all
+          </button>
+        ) : null}
+      </div>
       <ul className="space-y-1.5">
         {reminders.map((reminder) => (
           <li key={reminder.id} className="flex items-center gap-2 text-xs">
             <span className="min-w-0 flex-1 truncate">{reminder.title}</span>
             <span className="shrink-0 text-amber-300/90 light:text-amber-700">
-              {reminder.due_at ? `due ${new Date(reminder.due_at).toLocaleString()}` : ""}
+              {reminder.dueAt ? `due ${new Date(reminder.dueAt).toLocaleString()}` : ""}
             </span>
             <button
               type="button"

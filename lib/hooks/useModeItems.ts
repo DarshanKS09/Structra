@@ -77,7 +77,8 @@ import {
   toShoppingDraft,
   toNoteDraft,
   isItemCompleted,
-  toDateInputValue
+  toDateInputValue,
+  minutesToSeconds
 } from "@/lib/data/adapters";
 
 /**
@@ -591,18 +592,21 @@ export function useModeItems(
              * the timer's own control still drive `startStudySession`.
              */
             const draft = toStudyDraft(item);
-            if (draft.durationSeconds === null) {
+            if (!Number.isFinite(draft.durationMinutes) || draft.durationMinutes <= 0) {
               throw new DataError(
                 "VALIDATION",
-                "Enter how long you studied, for example \"45 min\"."
+                "Enter how long you studied - a number of minutes or hours."
               );
             }
+            // The ONE conversion from minutes to seconds. Everything above this
+            // line is minutes; everything below is seconds.
+            const seconds = minutesToSeconds(draft.durationMinutes);
             const subject = await createStudySubject(wsId, { name: item.subject || "Study" });
             setSubjectNames((previous) => new Map(previous).set(subject.id, subject.name));
             await logStudySession(wsId, uid, {
               subjectId: subject.id,
               topic: draft.topic,
-              durationSeconds: draft.durationSeconds
+              durationSeconds: seconds
             });
             // Announce the write so the Dashboard and Study Analytics re-read.
             bumpTaskRevision();
@@ -722,14 +726,13 @@ export function useModeItems(
               topic: draft.topic || null
             });
 
-            if (draft.durationSeconds !== null) {
-              await setStudySessionDuration(wsId, id, draft.durationSeconds);
+            if (Number.isFinite(draft.durationMinutes) && draft.durationMinutes > 0) {
+              // Same single conversion on the edit path. Re-deriving the rule in
+              // two places is how the two paths would drift apart.
+              await setStudySessionDuration(wsId, id, minutesToSeconds(draft.durationMinutes));
+              // A session given an explicit duration is a finished one.
+              setRunningStartedAt(null);
             }
-
-            // Editing a running session leaves it running only if no duration was
-            // entered; entering one finishes it, because a session with a duration
-            // is a completed one.
-            if (draft.durationSeconds !== null) setRunningStartedAt(null);
 
             bumpTaskRevision();
             await reload();

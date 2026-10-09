@@ -170,8 +170,32 @@ export const setTaskReminder = async (
   if (error) throw toDataError(error, "Could not update the reminder.");
 };
 
-/**
- * Reminders that are due now, for one user's workspace.
+/*
+ * ---------------------------------------------------------------------------
+ * WHAT CHANGED IN 01400, AND WHAT DID NOT
+ * ---------------------------------------------------------------------------
+ * `reminderDueAt` below is now a DISPLAY and TESTING helper only. The value the
+ * system actually schedules against is `tasks.reminder_at`, a real column that
+ * Postgres maintains with a trigger from `due_at` and `reminder_offset_minutes`.
+ *
+ * That distinction matters and is deliberate:
+ *
+ *   - `reminder_at` is persisted, indexable, and cannot be contradicted by any
+ *     client. The dispatcher's claim UPDATE filters on it, which is what makes a
+ *     scheduled sweep a single indexed range scan.
+ *   - `reminderDueAt` recomputes the same arithmetic in JavaScript. Keeping it
+ *     means the UI can still preview "Will remind you 30 minutes before" from a
+ *     form field that has not been saved yet, where there is no row to read.
+ *
+ * `listDueReminders` and `markReminderSent` are retained because they remain the
+ * in-app fallback for a task created before its reminder column existed, and
+ * because `REMINDER_OPEN_STATUSES` is shared with the dispatcher so the two can
+ * never disagree about what counts as live. Neither is on the delivery path any
+ * more: a reminder is delivered by `lib/reminders/dispatch.ts`, and acknowledging
+ * one writes `task_notifications.read_at` rather than `reminder_sent_at`.
+ */
+
+/** Reminders that are due now, for one user's workspace.
  *
  * The filter is applied in SQL so only candidate rows cross the wire, and the
  * `not.is.null` on `reminder_offset_minutes` is what keeps this cheap: the

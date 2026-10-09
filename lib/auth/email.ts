@@ -276,18 +276,27 @@ export const reminderEmail = (input: {
   dueAtLabel: string;
   /** e.g. "30 minutes before". Empty when there is no configured offset. */
   offsetLabel: string;
-  appUrl: string;
+  /**
+   * Where "Open Structra" points. Optional on purpose: a deployment that has not
+   * set `NEXT_PUBLIC_APP_URL` must still be able to send reminders, so the link
+   * and its wording are omitted rather than rendered pointing at a placeholder
+   * domain that would 404 for the user.
+   */
+  appUrl?: string;
 }): { subject: string; html: string; text: string } => {
   const { title, dueAtLabel, offsetLabel, appUrl } = input;
+  const link = Boolean(appUrl);
 
   const subject = `Reminder: ${title}`;
   const text = [
     title,
     "",
     `Due ${dueAtLabel}${offsetLabel ? ` (reminder ${offsetLabel})` : ""}.`,
-    "",
-    `Open Structra: ${appUrl}`
-  ].join("\n");
+    link ? "" : null,
+    link ? `Open Structra: ${appUrl}` : null
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
 
   const html = `<!doctype html>
 <html>
@@ -300,10 +309,14 @@ export const reminderEmail = (input: {
           offsetLabel ? ` &middot; reminder set ${escapeHtml(offsetLabel)}` : ""
         }.
       </p>
-      <a href="${escapeHtml(appUrl)}"
+      ${
+        link && appUrl
+          ? `<a href="${escapeHtml(appUrl)}"
          style="display:inline-block;background:#38bdf8;color:#082f49;text-decoration:none;font-weight:600;font-size:14px;padding:11px 20px;border-radius:12px">
         Open Structra
-      </a>
+      </a>`
+          : ""
+      }
     </div>
   </body>
 </html>`;

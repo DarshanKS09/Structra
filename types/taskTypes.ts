@@ -64,7 +64,27 @@ export interface StudyItem extends ItemBase {
   mode: "study";
   subject: string;
   topic: string;
+  /** Display string, derived - never parsed back. See `durationMinutes`. */
   estimatedStudyTime: string;
+  /**
+   * The session length in MINUTES.
+   *
+   * ---------------------------------------------------------------------------
+   * WHY THIS EXISTS
+   * ---------------------------------------------------------------------------
+   * The duration used to exist only as free text ("60 min"), so its unit was a
+   * guess. `formatDuration` expects SECONDS, so handing it a minutes value
+   * divides by 60 a second time: 60 minutes printed as "1 min". That is the
+   * exact reported symptom, and it was structural rather than a typo - there was
+   * no unit to be wrong about.
+   *
+   * `durationMinutes` is the single internal unit. The database boundary
+   * converts once (minutes -> seconds) and the display converts once
+   * (seconds -> a string), so no path can divide twice.
+   *
+   * Zero means "no duration recorded" rather than "a zero-length session".
+   */
+  durationMinutes: number;
   completed: boolean;
 }
 
