@@ -36,6 +36,9 @@ import {
   createStudySubject,
   startStudySession,
   stopStudySession,
+  logStudySession,
+  updateStudySession,
+  setStudySessionDuration,
   deleteStudySession,
   getRunningSession
 } from "@/lib/data/study";
@@ -111,6 +114,13 @@ export type ModeItemsState = {
   /** `null` when the mode has no count query; see `ModeCounts`. */
   counts: { all: number; active: number; completed: number } | null;
   reload: () => Promise<void>;
+  /**
+   * Re-resolves the mode's parent row (grocery list, record type, study subjects)
+   * and re-reads the list as a result. Needed when a write REPLACES the parent
+   * rather than mutating it - finishing a grocery trip archives the current list
+   * and stands up a new one, which no other dependency change would reveal.
+   */
+  refreshParent: () => Promise<void>;
   create: (item: ListItem) => Promise<MutationResult>;
   update: (id: string, item: ListItem) => Promise<MutationResult>;
   toggle: (id: string) => Promise<MutationResult>;
@@ -156,6 +166,22 @@ export function useModeItems(
   const [counts, setCounts] = useState<ModeCounts>(null);
 
   const enabled = Boolean(workspaceId && userId && mode);
+
+  /**
+   * Bumped to force the parent-row effect below to run again.
+   *
+   * Needed because finishing a grocery trip REPLACES the parent list rather than
+   * mutating it: the list the hook is bound to stops being active, and the user's
+   * next shop is a brand-new row. The effect's own dependencies (mode, workspace,
+   * user) are all unchanged by that, so without this signal the hook would keep
+   * reading the list it resolved at mount - which is now archived - and the screen
+   * would appear to show no change after a successful finish.
+   */
+  const [parentRevision, setParentRevision] = useState(0);
+
+  const refreshParent = useCallback(async () => {
+    setParentRevision((revision) => revision + 1);
+  }, []);
 
   // --- parent-row resolution ------------------------------------------------
   useEffect(() => {
@@ -210,7 +236,7 @@ export function useModeItems(
     return () => {
       cancelled = true;
     };
-  }, [mode, workspaceId, userId]);
+  }, [mode, workspaceId, userId, parentRevision]);
 
   // --- list -----------------------------------------------------------------
   const loader = useCallback(async (): Promise<ListItem[]> => {
@@ -547,13 +573,39 @@ export function useModeItems(
             );
 
           case "study": {
+            /*
+             * Logging a session the user has already studied.
+             *
+             * This used to call `startStudySession`, which wrote
+             * `started_at = now, ended_at = null`: a typed "2 h" became a live
+             * zero-second timer, the typed duration was thrown away, and every
+             * create added a row rather than a duration. `logStudySession` writes
+             * both timestamps so the generated `duration_seconds` is the length
+             * that was actually entered.
+             *
+             * A blank duration is a validation error rather than a silent fallback
+             * to "start a timer instead" - quietly turning a mistyped entry into a
+             * different kind of record is how this class of bug hides.
+             *
+             * The live timer is untouched: `startSession`/`stopSession` below and
+             * the timer's own control still drive `startStudySession`.
+             */
+            const draft = toStudyDraft(item);
+            if (draft.durationSeconds === null) {
+              throw new DataError(
+                "VALIDATION",
+                "Enter how long you studied, for example \"45 min\"."
+              );
+            }
             const subject = await createStudySubject(wsId, { name: item.subject || "Study" });
             setSubjectNames((previous) => new Map(previous).set(subject.id, subject.name));
-            const started = await startStudySession(wsId, uid, {
+            await logStudySession(wsId, uid, {
               subjectId: subject.id,
-              topic: toStudyDraft(item).topic
+              topic: draft.topic,
+              durationSeconds: draft.durationSeconds
             });
-            setRunningStartedAt(started.started_at);
+            // Announce the write so the Dashboard and Study Analytics re-read.
+            bumpTaskRevision();
             await reload();
             return { ok: true };
           }
@@ -602,7 +654,7 @@ export function useModeItems(
         return { ok: false, error: toDataError(caught) };
       }
     },
-    [requireContext, commit, groceryListId, recordTypeId, reload]
+    [requireContext, commit, groceryListId, recordTypeId, reload, bumpTaskRevision]
   );
 
   // --- UPDATE ---------------------------------------------------------------
@@ -640,9 +692,46 @@ export function useModeItems(
             );
 
           case "study": {
-            // Editing a study session stops it; there is no partial update.
-            await stopStudySession(wsId, id).catch(() => undefined);
-            setRunningStartedAt(null);
+            /*
+             * Editing a session UPDATES it. It does not stop it, and it does not
+             * insert a replacement.
+             *
+             * This branch used to be `stopStudySession(...)` followed by discarding
+             * every edited value and returning `ok: true` - so the UI reported a
+             * save that never happened, the subject/topic the user changed were
+             * lost, and the only thing that moved was the timestamps. Repeated
+             * edits therefore looked like the Dashboard was adding to the total
+             * rather than correcting it.
+             *
+             * Three writes to ONE row, in a fixed order:
+             *   1. subject  - resolved first, because the name is what the user
+             *                 typed and the previous subject may not exist
+             *   2. topic
+             *   3. duration - by moving `ended_at`, since `duration_seconds` is
+             *                 generated and cannot be written directly
+             *
+             * `ended_at` is only moved when a duration was actually entered, so
+             * renaming a topic never silently changes the recorded length.
+             */
+            const draft = toStudyDraft(item);
+            const subject = await createStudySubject(wsId, { name: item.subject || "Study" });
+            setSubjectNames((previous) => new Map(previous).set(subject.id, subject.name));
+
+            await updateStudySession(wsId, id, {
+              subject_id: subject.id,
+              topic: draft.topic || null
+            });
+
+            if (draft.durationSeconds !== null) {
+              await setStudySessionDuration(wsId, id, draft.durationSeconds);
+            }
+
+            // Editing a running session leaves it running only if no duration was
+            // entered; entering one finishes it, because a session with a duration
+            // is a completed one.
+            if (draft.durationSeconds !== null) setRunningStartedAt(null);
+
+            bumpTaskRevision();
             await reload();
             return { ok: true };
           }
@@ -683,7 +772,7 @@ export function useModeItems(
         return { ok: false, error: toDataError(caught) };
       }
     },
-    [requireContext, commit, groceryListId, reload]
+    [requireContext, commit, groceryListId, reload, bumpTaskRevision]
   );
 
   // --- TOGGLE ---------------------------------------------------------------
@@ -739,6 +828,9 @@ export function useModeItems(
               });
               setRunningStartedAt(started.started_at);
             }
+            // Toggling a session starts or stops the timer, which moves every
+            // study total shown elsewhere, so those screens must re-read.
+            bumpTaskRevision();
             await reload();
             return { ok: true };
 
@@ -768,7 +860,7 @@ export function useModeItems(
         return { ok: false, error: toDataError(caught) };
       }
     },
-    [requireContext, commit, run, groceryListId, visible, baseItems, reload]
+    [requireContext, commit, run, groceryListId, visible, baseItems, reload, bumpTaskRevision]
   );
 
   // --- DELETE ---------------------------------------------------------------
@@ -820,13 +912,16 @@ export function useModeItems(
           topic: input.topic ?? null
         });
         setRunningStartedAt(started.started_at);
+        // Study time changed, so the Dashboard and Study Analytics must re-read
+        // rather than keep showing the figure from before the timer started.
+        bumpTaskRevision();
         await reload();
         return { ok: true };
       } catch (caught) {
         return { ok: false, error: toDataError(caught) };
       }
     },
-    [requireContext, reload]
+    [requireContext, reload, bumpTaskRevision]
   );
 
   const stopSession = useCallback(async (): Promise<MutationResult> => {
@@ -838,12 +933,15 @@ export function useModeItems(
         await findRunningSessionId(context.workspaceId, context.userId)
       );
       setRunningStartedAt(null);
+      // Stopping a session turns elapsed time into a recorded duration, so every
+      // study total on other screens is now stale.
+      bumpTaskRevision();
       await reload();
       return { ok: true };
     } catch (caught) {
       return { ok: false, error: toDataError(caught) };
     }
-  }, [requireContext, reload]);
+  }, [requireContext, reload, bumpTaskRevision]);
 
   return useMemo(
     () => ({
@@ -854,6 +952,7 @@ export function useModeItems(
       isInitialLoading: query.isInitialLoading,
       counts,
       reload,
+      refreshParent,
       create,
       update,
       toggle,
@@ -873,6 +972,7 @@ export function useModeItems(
       enabled,
       counts,
       reload,
+      refreshParent,
       create,
       update,
       toggle,

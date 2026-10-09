@@ -215,11 +215,21 @@ function GroceryHistoryView() {
               <ul className="divide-y divide-white/10 light:divide-slate-200">
                 {openItems.map((item) => (
                   <li key={item.id} className="flex items-center gap-3 py-2 text-xs">
-                    <span
-                      className={`min-w-0 flex-1 truncate ${item.completed ? "text-slate-400 line-through" : ""}`}
-                    >
-                      {item.name}
-                    </span>
+                    {/*
+                      Historical item names render in the inherited body colour.
+
+                      They used to carry `line-through` plus a muted tone whenever
+                      the item was bought, which is right for a live checklist but
+                      wrong for a receipt: a finished trip is a record of what was
+                      purchased, and striking every line through made the list hard
+                      to read precisely when someone wants to review it.
+
+                      The completion state is NOT lost - it is still stored on the
+                      row, still counted in the "N bought" line in the header, and
+                      the active Grocery List keeps its own tick-through styling
+                      untouched. This is presentation for the history view only.
+                    */}
+                    <span className="min-w-0 flex-1 truncate">{item.name}</span>
                     {item.quantity ? (
                       <span className="shrink-0 tabular-nums text-slate-400 light:text-slate-500">
                         {item.quantity} {item.unit ?? ""}

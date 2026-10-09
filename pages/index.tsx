@@ -1,6 +1,7 @@
 import Head from "next/head";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/router";
 import type { GetServerSideProps } from "next";
 import { AnimatePresence, motion } from "framer-motion";
 import { AddItemModal } from "@/components/AddItemModal";
@@ -24,9 +25,10 @@ import { completeItem } from "@/lib/dashboard/complete";
 import { completeGroceryList, ensureDefaultGroceryList } from "@/lib/data/groceries";
 import { toDataError } from "@/lib/data/errors";
 import type { ProfileRow, UserSettingsRow, WorkspaceWithRole } from "@/lib/data/types";
-import { useTaskStore } from "@/store/useTaskStore";
+import { useTaskStore, type AppView } from "@/store/useTaskStore";
 import { useThemeController } from "@/lib/hooks/useThemeController";
 import {
+  modeLabels,
   type DraftByMode,
   type ListItem,
   type ListMode
@@ -104,13 +106,71 @@ function HomeContent() {
 
   const dashboard = useDashboard();
 
+  /*
+   * The selected section lives in the URL, not only in the store.
+   *
+   * ---------------------------------------------------------------------------
+   * WHY
+   * ---------------------------------------------------------------------------
+   * A section used to be Zustand state only, with no URL at all. Three problems
+   * followed from that:
+   *
+   *   - Back/forward could not work. Moving Dashboard -> Task -> Study left no
+   *     history entries, so Back left the app entirely instead of returning to
+   *     the previous section.
+   *   - A section was not linkable or reloadable: refreshing mid-section reset
+   *     you to the Dashboard, so the page you returned to was never the page you
+   *     left.
+   *   - Navigating from `/analytics/*` could not hand a target back to the home
+   *     page, because there was nothing in the URL to route with.
+   *
+   * Shallow routing is used, so the URL changes without re-running
+   * `getServerSideProps` - the session is already resolved and nothing is refetched
+   * on a section switch. That is what keeps switching instant.
+   *
+   * The Dashboard is deliberately the parameterless URL: a plain visit to `/` has
+   * no `view`, so a returning user still lands on the Dashboard exactly as
+   * before.
+   */
+  const router = useRouter();
+  const appliedFromUrl = useRef(false);
+
+  // URL -> store. Runs once the query is available, and only for a value that is
+  // actually a view, so a hand-edited `?view=typo` falls back to the Dashboard
+  // instead of rendering nothing.
+  useEffect(() => {
+    if (!router.isReady || appliedFromUrl.current) return;
+    appliedFromUrl.current = true;
+    const requested = router.query.view;
+    if (typeof requested === "string" && isAppView(requested) && requested !== view) {
+      setView(requested);
+    }
+  }, [router.isReady, router.query.view, view, setView]);
+
+  // store -> URL.
+  const lastPushed = useRef<string | null>(null);
+  useEffect(() => {
+    if (!router.isReady || !mounted) return;
+    // Back/forward already set the store from the URL above; re-pushing would
+    // add a duplicate history entry and trap the user in a loop.
+    if (lastPushed.current === view) return;
+    const current = typeof router.query.view === "string" ? router.query.view : null;
+    if (current === (view === "dashboard" ? null : view)) return;
+    lastPushed.current = view;
+    void router.replace(
+      { pathname: "/", query: view === "dashboard" ? {} : { view } },
+      undefined,
+      { shallow: true, scroll: false }
+    );
+  }, [router, router.isReady, view, mounted]);
+
   const modeItems = useModeItems(
     selectedMode ?? "task",
     filter,
     searchQuery
   );
 
-  const { items, reload, create, update, toggle, remove, counts, status: dataStatus, error: dataError } = modeItems;
+  const { items, reload, refreshParent, create, update, toggle, remove, counts, status: dataStatus, error: dataError } = modeItems;
 
   useEffect(() => setMounted(true), []);
 
@@ -185,14 +245,27 @@ function HomeContent() {
    */
   const [finishingGrocery, setFinishingGrocery] = useState(false);
   const [groceryError, setGroceryError] = useState<string | null>(null);
+  // Confirms the trip was archived. Without it a successful finish looks like
+  // nothing happened, because the section simply empties out.
+  const [groceryNotice, setGroceryNotice] = useState<string | null>(null);
 
   /**
    * Archives the current grocery trip.
    *
    * This is the destructive-looking action that is actually non-destructive: it
    * stamps `completed_at` and starts a fresh list, leaving every purchased item
-   * intact for the history view. On success the section is re-read so the user
-   * sees the new empty list rather than the trip they just archived.
+   * intact for the history view.
+   *
+   * Ordering matters and is the point of the shape below. The active list is only
+   * transitioned once the archive has been confirmed by the database, so a failure
+   * anywhere before that leaves the user still holding their list: if the write
+   * throws, neither `refreshParent` nor the section re-read is reached.
+   *
+   * `reload()` is deliberately NOT called here. Re-resolving the parent row moves
+   * the hook onto the new list, and that changed id is already a dependency of the
+   * list query, so the section re-reads itself. Calling `reload()` as well would
+   * issue a second read against the now-archived list and briefly flash back the
+   * trip the user just finished.
    */
   const handleFinishGroceryList = useCallback(async () => {
     if (!workspace) return;
@@ -200,16 +273,18 @@ function HomeContent() {
     setGroceryError(null);
     try {
       const active = await ensureDefaultGroceryList(workspace.id);
-      await completeGroceryList(workspace.id, active.id);
-      await reload();
+      const { completedList } = await completeGroceryList(workspace.id, active.id);
+      // The trip is durable history now. Move the section onto the next list.
+      await refreshParent();
       // The Dashboard shows the history count, so it must be re-read too.
       await dashboard.reload();
+      setGroceryNotice(`Saved "${completedList.name}" to Grocery History with its items.`);
     } catch (caught) {
       setGroceryError(toDataError(caught, "Could not finish the grocery list.").message);
     } finally {
       setFinishingGrocery(false);
     }
-  }, [workspace, reload, dashboard]);
+  }, [workspace, refreshParent, dashboard]);
 
   const greeting = useMemo(() => {
     const name = profile?.display_name?.trim();
@@ -437,6 +512,18 @@ function HomeContent() {
                 </div>
               ) : null}
 
+              {groceryNotice ? (
+                <p className="text-xs text-emerald-300 light:text-emerald-700">
+                  {groceryNotice}{" "}
+                  <Link
+                    href="/grocery-history"
+                    className="underline underline-offset-2"
+                  >
+                    View history
+                  </Link>
+                </p>
+              ) : null}
+
               {groceryError ? (
                 <p role="alert" className="text-xs text-rose-300 light:text-rose-700">
                   {groceryError}
@@ -525,6 +612,18 @@ function draftToItem<M extends ListMode>(mode: M, draft: DraftByMode[M]): ListIt
       // Unreachable: ListMode is a closed union. Kept exhaustive-safe.
       return { ...base, mode: mode as never } as unknown as ListItem;
   }
+}
+
+/**
+ * Whether a URL value names a real view.
+ *
+ * `?view=` arrives from the address bar, so it is untrusted input. Validating it
+ * means a mistyped or hand-edited parameter degrades to the Dashboard rather than
+ * rendering a blank screen with no section selected.
+ */
+function isAppView(value: string): value is AppView {
+  if (value === "dashboard" || value === "modes") return true;
+  return (modeLabels as Record<string, unknown>)[value] !== undefined;
 }
 
 function ModeView({

@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/router";
 import { AnimatePresence, motion } from "framer-motion";
 import { modeLabels, type ListMode } from "@/types/taskTypes";
 import { ProfileMenu } from "@/components/ProfileMenu";
@@ -25,6 +27,26 @@ import type { AppView } from "@/store/useTaskStore";
  * used to be reachable stops being reachable.
  */
 
+/**
+ * Decides what a navigation click should actually DO.
+ *
+ * Exported and pure so the routing rule can be verified without a browser.
+ *
+ * Sections are not routes - they are store state rendered by `pages/index.tsx` -
+ * so on the home page setting the view IS the navigation. On any other page the
+ * same `setView` changes an in-memory value nothing there reads, so the click must
+ * ALSO route home, where that view is actually rendered. Skipping that second half
+ * is why clicking "Dashboard" on the analytics pages appeared to do nothing.
+ *
+ * `view` is deliberately not persisted, so it survives `router.push` (a
+ * client-side transition) but not a later full reload - which is exactly the
+ * intended behaviour, since a returning user still lands on the Dashboard.
+ */
+export const resolveNavAction = (
+  isHome: boolean,
+  target: AppView
+): { view: AppView; routeHome: boolean } => ({ view: target, routeHome: !isHome });
+
 const MODE_ICONS: Record<ListMode, string> = {
   task: "✓",
   grocery: "◉",
@@ -36,9 +58,21 @@ const MODE_ICONS: Record<ListMode, string> = {
 };
 
 /** Real pages that live alongside the section modes. */
+/**
+ * Real pages that sit alongside the section modes.
+ *
+ * Task Analytics and Study Analytics are deliberately NOT here. They used to be,
+ * which made the section row read as "eight sections" when they are reports about
+ * the sections rather than places to put things. They are reached from the
+ * Dashboard cards instead - "View detailed analytics" under the task and study
+ * charts - which keeps the section list about doing work and the reports one hop
+ * away from the numbers they explain.
+ *
+ * Grocery history stays: it is a destination in its own right (a place to open a
+ * past trip and copy from it), not a report, and it is also linked from the
+ * Dashboard's groceries card.
+ */
 const EXTRA_PAGES: { href: string; label: string }[] = [
-  { href: "/analytics/tasks", label: "Task Analytics" },
-  { href: "/analytics/study", label: "Study Analytics" },
   { href: "/grocery-history", label: "Grocery History" }
 ];
 
@@ -85,6 +119,11 @@ export function NavBar({ view, onNavigate }: NavBarProps) {
 
   const isActive = (target: AppView) => view === target;
 
+  // Whether this bar is being rendered by the home page - the only page that can
+  // turn a section target into visible content.
+  const router = useRouter();
+  const isHome = router.pathname === "/";
+
   const navItemClass = (active: boolean) =>
     `h-10 rounded-xl px-3 text-sm ${
       active
@@ -92,9 +131,33 @@ export function NavBar({ view, onNavigate }: NavBarProps) {
         : "border border-white/20 transition hover:border-white/40 hover:bg-white/10 light:border-slate-300"
     }`;
 
+  /**
+   * Navigates to a section target.
+   *
+   * ---------------------------------------------------------------------------
+   * WHY THE ROUTER CHECK IS HERE
+   * ---------------------------------------------------------------------------
+   * Sections are not routes. They are Zustand state rendered by `pages/index.tsx`,
+   * so on the home page `onNavigate` alone is correct and instant.
+   *
+   * But this bar is also rendered by `/analytics/tasks`, `/analytics/study` and
+   * `/grocery-history`, and those pages pass the SAME `setView`. On them
+   * `onNavigate` changed an in-memory value that nothing on the page reads, so
+   * clicking "Dashboard" did nothing at all and the user stayed on Task Analytics.
+   * `view` is deliberately not persisted either, so the intent evaporated on the
+   * next navigation.
+   *
+   * So: on the home page, set the view directly. Anywhere else, set it AND go to
+   * `/`, where that view is actually rendered. Because `router.push` is a
+   * client-side transition, the non-persisted `view` survives the handoff, while a
+   * later full reload still lands on the Dashboard - which is the existing
+   * behaviour for returning users and must not change.
+   */
   const go = (target: AppView) => {
-    onNavigate(target);
+    const action = resolveNavAction(isHome, target);
+    onNavigate(action.view);
     setMobileOpen(false);
+    if (action.routeHome) router.push("/");
   };
 
   return (
@@ -229,20 +292,29 @@ export function NavBar({ view, onNavigate }: NavBarProps) {
         </motion.button>
 
         {/*
-          Analytics are real pages, not modes, so they are ordinary links rather
-          than new members of the `ListMode` union. Keeping them separate means
-          adding a report never widens that union or touches a list component.
+          Extra pages are real routes, not modes, so they are links rather than new
+          members of the `ListMode` union. Keeping them separate means adding a
+          page never widens that union or touches a list component.
+
+          These are Next `<Link>`s. They were plain `<a href>`, which forces a
+          full document reload: every click tore down the React tree, re-ran
+          getServerSideProps and re-fetched everything from scratch. That is the
+          transition lag, and it is also why navigating felt unreliable - a full
+          reload shows whatever the new page's first render produces, with no
+          shared client state to keep it consistent with where you came from.
+          Client-side routing keeps the session, the auth state and the store, so
+          the destination renders from data already in memory.
         */}
         {EXTRA_PAGES.map((page) => (
-          <motion.a
-            key={page.href}
-            href={page.href}
-            whileHover={{ y: -2 }}
-            whileTap={{ scale: 0.98 }}
-            className="flex h-10 items-center rounded-xl border border-white/20 px-3 text-sm transition hover:border-white/40 hover:bg-white/10 light:border-slate-300"
-          >
-            {page.label}
-          </motion.a>
+          <Link key={page.href} href={page.href} legacyBehavior={false}>
+            <motion.span
+              whileHover={{ y: -2 }}
+              whileTap={{ scale: 0.98 }}
+              className="flex h-10 cursor-pointer items-center rounded-xl border border-white/20 px-3 text-sm transition hover:border-white/40 hover:bg-white/10 light:border-slate-300"
+            >
+              {page.label}
+            </motion.span>
+          </Link>
         ))}
       </nav>
 

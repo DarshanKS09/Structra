@@ -173,6 +173,16 @@ export function StudyProgressCard({
   analytics: StudyAnalytics;
   href?: string;
 }) {
+  /*
+   * The card is linked even when there is no study time yet.
+   *
+   * It used to drop its `href` when `totalSeconds === 0`, which was reasonable
+   * while "Study Analytics" was also a tab in the section navigation. Now that the
+   * nav entry is gone, this card is the only way in - so suppressing it would make
+   * the page unreachable for exactly the user who most needs to see the empty
+   * state and learn what to log. The card already renders a "No completed
+   * sessions yet" message, so the target is still meaningful.
+   */
   const slices = analytics.bySubject.map((entry) => ({
     key: entry.subjectId ?? "unclassified",
     label: entry.label,
@@ -187,7 +197,7 @@ export function StudyProgressCard({
           ? "No completed sessions yet"
           : `${formatStudyTime(analytics.monthSeconds)} this month`
       }
-      href={analytics.totalSeconds === 0 ? undefined : href}
+      href={href}
     >
       <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-center">
         <DonutChart

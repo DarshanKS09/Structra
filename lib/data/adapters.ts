@@ -124,6 +124,50 @@ export const formatDuration = (seconds: number | null): string => {
   return `${hours}h ${minutes}m`;
 };
 
+/**
+ * Parses a typed study duration into seconds.
+ *
+ * `estimatedStudyTime` is a free-text field ("45 min", "2h", "1 h 30 m"), and the
+ * user edits it expecting it to change their study time. Until now it was parsed
+ * nowhere and simply discarded, which is why editing study hours had no effect.
+ *
+ * Returns `null` when the text holds no recognisable duration, so a caller can
+ * distinguish "no duration given" from "zero minutes" - they mean different
+ * things, and collapsing them to 0 would silently create zero-length sessions.
+ *
+ * `formatDuration` is the exact inverse for anything it produces, so a value read
+ * back out of the database round-trips into the same text.
+ */
+export const parseStudyDuration = (value: string | null | undefined): number | null => {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return null;
+
+  // Reject anything that is not a duration at all, so a stray word cannot become
+  // NaN and then propagate into a timestamp.
+  if (!/\d/.test(text)) return null;
+
+  const hours = /(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b/.exec(text);
+  const mins = /(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b/.exec(text);
+
+  let seconds = 0;
+  let matched = false;
+  if (hours) { seconds += Number(hours[1]) * 3600; matched = true; }
+  if (mins) { seconds += Number(mins[1]) * 60; matched = true; }
+
+  // A bare number is read as minutes, matching the field's "45 min" placeholder.
+  if (!matched) {
+    const bare = /^\s*(\d+(?:\.\d+)?)\s*$/.exec(text);
+    if (!bare) return null;
+    seconds = Number(bare[1]) * 60;
+  }
+
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  // A year is far beyond any plausible study session and would produce absurd
+  // timestamps, so it is treated as a typo rather than obeyed.
+  if (seconds > 366 * 24 * 3600) return null;
+  return Math.round(seconds);
+};
+
 /** Seconds elapsed since an instant, for a running session. */
 export const elapsedSince = (startedAt: string, now: number = Date.now()): number =>
   Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
@@ -249,7 +293,7 @@ export type ModeDrafts = {
   };
   grocery: (item: GroceryItem) => { name: string; quantity: number | null; unit: "kg" | "g" | "pieces" | "liters" | null };
   habit: (item: HabitItem) => { name: string; frequency: "daily" | "weekly" };
-  study: (item: StudyItem) => { topic: string; subject: string };
+  study: (item: StudyItem) => { topic: string; subject: string; durationSeconds: number | null };
   fitness: (item: FitnessItem) => Record<string, unknown>;
   shopping: (item: ShoppingItem) => Record<string, unknown>;
   meeting: (item: MeetingItem) => { title: string; content: string };
@@ -310,7 +354,11 @@ export const toNoteDraft: ModeDrafts["meeting"] = (item) => ({
 /** Session notes for the study mode, where the UI has no free-text field yet. */
 export const toStudyDraft: ModeDrafts["study"] = (item) => ({
   subject: item.subject || "Study",
-  topic: item.topic || ""
+  topic: item.topic || "",
+  // The duration the user typed, in seconds. This field used to be dropped here
+  // entirely, which is why editing study hours changed nothing on disk while the
+  // UI reported success.
+  durationSeconds: parseStudyDuration(item.estimatedStudyTime)
 });
 
 // ---------------------------------------------------------------------------

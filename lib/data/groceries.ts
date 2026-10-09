@@ -167,16 +167,27 @@ export const listGroceryHistory = async (
 export const completeGroceryList = async (
   workspaceId: string,
   listId: string
-): Promise<{ completedList: GroceryListRow; activeList: GroceryListRow }> => {
+): Promise<{ completedList: GroceryListRow; activeList: GroceryListRow | null }> => {
   // Without the column there is nowhere to record the archive, so say so plainly
   // rather than falling back to deleting the items - which is the exact behaviour
   // this feature exists to remove.
+  //
+  // The message names the exact file and command, because this is a deployment
+  // gap rather than a user mistake: the code is correct and the schema is behind.
+  // Telling someone merely that "a migration is required" leaves them to guess.
   if (!(await supportsCompletedAt())) {
     throw validationError(
-      "Grocery history is unavailable until its database migration is applied."
+      "Grocery history is unavailable because grocery_lists.completed_at does not exist yet. " +
+        "Apply supabase/migrations/20250101001300_reminders_and_grocery_history.sql " +
+        "with `npx supabase db push`, then reload the page."
     );
   }
 
+  // The archive is the operation that must not be lost, so it is a single
+  // compare-and-set: the `.is("completed_at", null)` guard means a double submit,
+  // or a retry after a dropped connection, matches zero rows and surfaces an
+  // error rather than stamping the list twice. Duplicate history is therefore
+  // impossible rather than merely unlikely.
   const { data, error } = await db()
     .from("grocery_lists")
     .update({ completed_at: new Date().toISOString() })
@@ -188,54 +199,213 @@ export const completeGroceryList = async (
 
   if (error) throw toDataError(error, "Could not finish the grocery list.");
 
-  const activeList = await ensureDefaultGroceryList(workspaceId);
+  // ---------------------------------------------------------------------------
+  // WHY A FAILED SUCCESSOR LIST DOES NOT FAIL THE ARCHIVE
+  // ---------------------------------------------------------------------------
+  // By this point the trip is durably in history. If creating the next active
+  // list then fails, reporting a hard error would be a lie about the database:
+  // the user would retry a finish that has already happened.
+  //
+  // Returning `activeList: null` keeps the archive, reports success, and lets the
+  // caller re-resolve the active list on its next read - `ensureDefaultGroceryList`
+  // creates it on demand, so the user is never permanently stranded without one.
+  const activeList = await ensureDefaultGroceryList(workspaceId).catch(() => null);
   return { completedList: data, activeList };
 };
 
 /**
- * Copies a historical trip's outstanding items into the current list.
+ * Canonical form of an item name, used to decide whether two rows are "the same
+ * thing".
  *
- * Explicitly opt-in. Old items are never pushed back automatically, because doing
- * so would silently resurrect a shop the user already finished.
+ * Case and surrounding whitespace are cosmetic ("  Milk " and "milk" are one
+ * item), so they are collapsed. Interior whitespace is collapsed too, because
+ * "Tomato   Soup" and "Tomato Soup" are obviously the same purchase and treating
+ * them as different produces exactly the duplicate rows this function exists to
+ * prevent.
  *
- * Only items that were still unpurchased are copied - those are the ones worth
- * re-adding - and names already on the active list are skipped, so running this
- * twice cannot double the list.
+ * Deliberately NOT aggressive: no stemming, no singular/plural folding, no
+ * synonym mapping. "tomatoes" and "tomato" stay distinct, because guessing that
+ * they are the same would silently drop a real item from the user's list.
+ */
+const normaliseItemName = (name: string): string =>
+  name.trim().replace(/\s+/g, " ").toLowerCase();
+
+/**
+ * Are two quantities measured the same way?
+ *
+ * Two items are only interchangeable if their units agree, or if either side
+ * simply has no unit recorded - an unspecified quantity and an explicit one are
+ * not a conflict, because there is nothing to contradict.
+ *
+ * `kg` and `liters` are deliberately NOT compatible. Merging them would be
+ * inventing arithmetic the user never asked for, which is the same reasoning
+ * that keeps the schema from summing quantities across differing units.
+ */
+const unitsCompatible = (a: string | null, b: string | null): boolean =>
+  a === null || b === null || a === b;
+
+/** The result of copying one historical trip onto the active list. */
+export type CopyGroceryResult = {
+  /** Items inserted into the active list. */
+  added: number;
+  /** Historical items already represented on the active list. */
+  alreadyPresent: number;
+  /**
+   * Historical items skipped because the active list has the same name in a
+   * DIFFERENT unit - for example "Milk 2 liters" already on the list versus
+   * "Milk 500 g" in the history.
+   *
+   * Reported rather than silently copied, because copying would put two rows
+   * both reading "Milk" in front of the user, and silently skipping would hide
+   * that an item was left behind.
+   */
+  unitConflicts: string[];
+  /** The historical list that was read. */
+  fromListId: string;
+  /** The active list that was written. */
+  toListId: string;
+};
+
+/** Serialises concurrent copies so a double click cannot interleave two reads. */
+const copiesInFlight = new Set<string>();
+
+/**
+ * Copies a historical trip's items into the current list.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THE READ IS INSIDE A LOCK
+ * ---------------------------------------------------------------------------
+ * Duplicate handling is "read what is there, then insert only what is missing".
+ * Two of those running at once both read the pre-copy state, both decide the
+ * same items are missing, and both insert - producing exactly the duplicates
+ * this is meant to prevent. A repeated click and a client-side retry are the
+ * same failure. The in-flight guard serialises them per source/target pair
+ * inside this module; the caller disables its button as well, which is a
+ * courtesy to the user rather than the correctness mechanism.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY EVERY ITEM IS COPIED, NOT ONLY THE UNBOUGHT ONES
+ * ---------------------------------------------------------------------------
+ * The whole point is to shop the list again, so every item is copied and every
+ * copy starts unpurchased (`completed: false`). Copying only what was left
+ * unbought would quietly mean something else - "restore my omissions" - and
+ * would leave the user with a list that silently omits things they had bought.
+ *
+ * ---------------------------------------------------------------------------
+ * THE SOURCE IS NEVER TOUCHED
+ * ---------------------------------------------------------------------------
+ * This function only ever INSERTs into `toListId`. There is no UPDATE or DELETE
+ * anywhere in it, so the historical trip and its items cannot be modified,
+ * re-ordered, or archived by reusing it.
  */
 export const copyGroceryListItems = async (
   fromListId: string,
   toListId: string
-): Promise<number> => {
+): Promise<CopyGroceryResult> => {
   if (fromListId === toListId) {
     throw validationError("That list is already the current one.");
   }
 
-  const [{ data: source, error: sourceError }, { data: existing, error: existingError }] =
-    await Promise.all([
-      db().from("grocery_items").select("*").eq("grocery_list_id", fromListId),
-      db().from("grocery_items").select("name").eq("grocery_list_id", toListId)
-    ]);
-  if (sourceError) throw toDataError(sourceError, "Could not read that list.");
-  if (existingError) throw toDataError(existingError, "Could not read the current list.");
+  const lockKey = `${fromListId}->${toListId}`;
+  if (copiesInFlight.has(lockKey)) {
+    throw validationError("That list is already being copied. Try again in a moment.");
+  }
+  copiesInFlight.add(lockKey);
 
-  const alreadyThere = new Set((existing ?? []).map((row) => row.name.trim().toLowerCase()));
-  const toInsert = (source ?? [])
-    .filter((row) => !row.completed)
-    .filter((row) => !alreadyThere.has(row.name.trim().toLowerCase()))
-    .map((row) => ({
-      grocery_list_id: toListId,
-      name: row.name,
-      quantity: row.quantity,
-      unit: row.unit,
-      completed: false,
-      notes: row.notes
-    }));
+  try {
+    // Both reads in parallel: the source to copy from and the target to compare
+    // against. Both are scoped by the caller's own session, so RLS is what
+    // prevents one user reading - let alone copying - another's history.
+    const [{ data: source, error: sourceError }, { data: existing, error: existingError }] =
+      await Promise.all([
+        db().from("grocery_items").select("*").eq("grocery_list_id", fromListId),
+        db().from("grocery_items").select("name, unit").eq("grocery_list_id", toListId)
+      ]);
+    if (sourceError) throw toDataError(sourceError, "Could not read that list.");
+    if (existingError) throw toDataError(existingError, "Could not read the current list.");
 
-  if (toInsert.length === 0) return 0;
+    // Index the active list once, by normalised name. O(active) rather than
+    // O(source x active), which matters for a long-running household's history.
+    const activeByName = new Map<string, { unit: string | null }[]>();
+    for (const row of existing ?? []) {
+      const key = normaliseItemName(row.name);
+      const bucket = activeByName.get(key);
+      if (bucket) bucket.push({ unit: row.unit ?? null });
+      else activeByName.set(key, [{ unit: row.unit ?? null }]);
+    }
 
-  const { error } = await db().from("grocery_items").insert(toInsert);
-  if (error) throw toDataError(error, "Could not copy those items.");
-  return toInsert.length;
+    const toInsert: Array<{
+      grocery_list_id: string;
+      name: string;
+      quantity: number | null;
+      unit: string | null;
+      completed: boolean;
+      notes: string | null;
+    }> = [];
+    const unitConflicts: string[] = [];
+    let alreadyPresent = 0;
+
+    for (const row of source ?? []) {
+      const key = normaliseItemName(row.name);
+      const matches = activeByName.get(key);
+
+      if (matches && matches.length > 0) {
+        const compatible = matches.some((m) => unitsCompatible(m.unit, row.unit ?? null));
+        if (compatible) {
+          // Already on the active list. Left exactly as it is - its quantity and
+          // its purchased state are the user's current intent and must not be
+          // overwritten by a stale historical value.
+          alreadyPresent += 1;
+          continue;
+        }
+        // Same name, incompatible unit. Not copied, and not hidden either.
+        unitConflicts.push(`${row.name}${row.quantity != null ? ` (${row.quantity}${row.unit ? ` ${row.unit}` : ""})` : ""}`);
+        continue;
+      }
+
+      toInsert.push({
+        grocery_list_id: toListId,
+        name: row.name,
+        quantity: row.quantity,
+        unit: row.unit,
+        // Always starts unbought, so the copied list can actually be shopped.
+        completed: false,
+        notes: row.notes
+      });
+    }
+
+    if (toInsert.length === 0) {
+      return { added: 0, alreadyPresent, unitConflicts, fromListId, toListId };
+    }
+
+    // One multi-row INSERT, which is atomic: either the whole copy lands or none
+    // of it does, so a failure cannot leave a half-copied list behind.
+    const { error } = await db().from("grocery_items").insert(toInsert);
+    if (error) throw toDataError(error, "Could not copy those items.");
+
+    return { added: toInsert.length, alreadyPresent, unitConflicts, fromListId, toListId };
+  } finally {
+    copiesInFlight.delete(lockKey);
+  }
+};
+
+/** One-line summary of a copy, so the UI never has to reconstruct the counts. */
+export const describeCopyResult = (result: CopyGroceryResult): string => {
+  const parts: string[] = [];
+  parts.push(
+    result.added === 0
+      ? "Nothing new to add"
+      : `Added ${result.added} item${result.added === 1 ? "" : "s"} to your current list`
+  );
+  if (result.alreadyPresent > 0) {
+    parts.push(`${result.alreadyPresent} already on it`);
+  }
+  if (result.unitConflicts.length > 0) {
+    const shown = result.unitConflicts.slice(0, 3).join(", ");
+    const more = result.unitConflicts.length > 3 ? ` and ${result.unitConflicts.length - 3} more` : "";
+    parts.push(`skipped ${result.unitConflicts.length} in a different unit (${shown}${more})`);
+  }
+  return `${parts.join(", ")}.`;
 };
 
 /** A history entry plus its item counts, without loading every item row. */
