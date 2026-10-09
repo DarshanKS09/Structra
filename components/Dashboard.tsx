@@ -464,6 +464,11 @@ export function Dashboard({
           </div>
         </Card>
       ) : null}
+
+      {/* Deployment connection test marker. Presentation only - remove freely. */}
+      <p className="pt-1 text-center text-[11px] text-slate-400 light:text-slate-500">
+        Deployment connection test
+      </p>
     </div>
   );
 }
