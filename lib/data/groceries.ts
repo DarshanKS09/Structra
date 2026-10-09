@@ -1,6 +1,7 @@
 import { db } from "@/lib/data/client";
 import { toDataError, validationError } from "@/lib/data/errors";
 import type {
+  GroceryItemInsert,
   GroceryItemRow,
   GroceryListRow,
   GroceryUnit,
@@ -22,6 +23,58 @@ import type {
 
 /** Default list created on first use so grocery mode is never empty of lists. */
 export const DEFAULT_LIST_NAME = "My Groceries";
+
+/**
+ * Every unit the `grocery_unit` enum accepts, as a runtime set.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS WHEN THE TYPES ALREADY KNOW
+ * ---------------------------------------------------------------------------
+ * `Database["public"]["Enums"]["grocery_unit"]` is `"kg" | "g" | "pieces" |
+ * "liters"` at COMPILE time, and `grocery_items.unit` is generated from it, so a
+ * row read back through Supabase is already correctly typed. This set is
+ * therefore not needed to satisfy the compiler - and it is not a substitute for
+ * it either.
+ *
+ * It exists because `copyGroceryListItems` reads rows and re-inserts them through
+ * a DIFFERENT call, and the type of that value has to be re-established at the
+ * point of insertion. Previously the re-insert array was annotated with a
+ * hand-written structural type (`unit: string | null`), which is a duplicate of
+ * the schema and drifts the moment anyone edits it - that is precisely how the
+ * production build broke, twice. Deriving the array from
+ * `TablesInsert<"grocery_items">` removes the duplicate entirely.
+ *
+ * The set is the runtime half of the same guarantee, for the one case types
+ * cannot cover: a value that reaches this module from OUTSIDE the generated
+ * types (a hand-edited legacy payload, an old localStorage import) can be any
+ * string at runtime. Postgres would reject it - the enum does - but only AFTER
+ * the whole multi-row INSERT had been assembled and the user had waited for the
+ * round trip. Filtering first means an unsupported unit is reported as such
+ * instead of failing the copy as a whole.
+ */
+const SUPPORTED_UNITS: ReadonlySet<string> = new Set<GroceryUnit>([
+  "kg",
+  "g",
+  "pieces",
+  "liters"
+]);
+
+/**
+ * Narrows an arbitrary value to a unit the database will accept, or `null`.
+ *
+ * Normalises case and surrounding whitespace, because "Kg" and " kg " are the
+ * same unit and rejecting them would be pedantry rather than safety.
+ *
+ * Returns `null` for anything unrecognised. That is a deliberate, explicit
+ * outcome rather than a silent pass-through: `grocery_items.unit` is an enum, so
+ * writing an unsupported value would fail the ENTIRE batch insert and lose the
+ * copy. Callers are expected to report the affected items.
+ */
+export const normaliseGroceryUnit = (value: unknown): GroceryUnit | null => {
+  if (value === null || value === undefined) return null;
+  const candidate = String(value).trim().toLowerCase();
+  return SUPPORTED_UNITS.has(candidate) ? (candidate as GroceryUnit) : null;
+};
 
 export const listGroceryLists = async (workspaceId: string): Promise<GroceryListRow[]> => {
   const { data, error } = await db()
@@ -241,7 +294,7 @@ const normaliseItemName = (name: string): string =>
  * inventing arithmetic the user never asked for, which is the same reasoning
  * that keeps the schema from summing quantities across differing units.
  */
-const unitsCompatible = (a: string | null, b: string | null): boolean =>
+const unitsCompatible = (a: GroceryUnit | null, b: GroceryUnit | null): boolean =>
   a === null || b === null || a === b;
 
 /** The result of copying one historical trip onto the active list. */
@@ -260,6 +313,16 @@ export type CopyGroceryResult = {
    * that an item was left behind.
    */
   unitConflicts: string[];
+  /**
+   * Historical items skipped because their stored unit is not one of the
+   * supported enum values (`kg`, `g`, `pieces`, `liters`).
+   *
+   * Normally empty: the column is a Postgres enum, so an unsupported value
+   * cannot exist in a row this module read. It is populated only by data that
+   * reached the database by some other route, and it is reported rather than
+   * passed through, because writing it would fail the entire batch insert.
+   */
+  unsupportedUnits: string[];
   /** The historical list that was read. */
   fromListId: string;
   /** The active list that was written. */
@@ -326,31 +389,56 @@ export const copyGroceryListItems = async (
 
     // Index the active list once, by normalised name. O(active) rather than
     // O(source x active), which matters for a long-running household's history.
-    const activeByName = new Map<string, { unit: string | null }[]>();
+    const activeByName = new Map<string, { unit: GroceryUnit | null }[]>();
     for (const row of existing ?? []) {
       const key = normaliseItemName(row.name);
+      // Normalised on the way in for the same reason as the source rows: an
+      // existing "Kg" and an incoming "kg" must compare equal, or a legacy
+      // capitalisation would read as a unit conflict and skip a real item.
+      const unit = normaliseGroceryUnit(row.unit);
       const bucket = activeByName.get(key);
-      if (bucket) bucket.push({ unit: row.unit ?? null });
-      else activeByName.set(key, [{ unit: row.unit ?? null }]);
+      if (bucket) bucket.push({ unit });
+      else activeByName.set(key, [{ unit }]);
     }
 
-    const toInsert: Array<{
-      grocery_list_id: string;
-      name: string;
-      quantity: number | null;
-      unit: GroceryUnit | null;
-      completed: boolean;
-      notes: string | null;
-    }> = [];
+    /*
+     * Typed from the GENERATED schema, not hand-written.
+     *
+     * The previous annotation spelled out `{ grocery_list_id: string; name:
+     * string; quantity: number | null; unit: string | null; ... }`, which is a
+     * second, hand-maintained copy of the `grocery_items` shape. It happened to
+     * disagree with the real column type, and because a structural type is not
+     * checked against the schema, the disagreement only surfaced at the `.insert`
+     * call - far from the line that introduced it, and only on a full production
+     * build. Deriving the shape means there is nothing left to drift: if the
+     * column changes, this follows automatically.
+     */
+    const toInsert: GroceryItemInsert[] = [];
     const unitConflicts: string[] = [];
+    /** Historical rows whose unit is not a supported value; see `normaliseGroceryUnit`. */
+    const unsupportedUnits: string[] = [];
     let alreadyPresent = 0;
 
     for (const row of source ?? []) {
       const key = normaliseItemName(row.name);
       const matches = activeByName.get(key);
+      /*
+       * Resolved once per row and used for both the duplicate comparison and the
+       * write, so the unit that decided compatibility is provably the unit that
+       * gets stored. Normalising at the boundary means a legacy "Kg" and a
+       * current "kg" compare equal instead of looking like a conflict.
+       */
+      const unit = normaliseGroceryUnit(row.unit);
+
+      // An unrecognised unit cannot be written, and writing it would fail the
+      // whole batch. Drop the item and say so, rather than losing the copy.
+      if (unit === null && row.unit !== null && row.unit !== undefined) {
+        unsupportedUnits.push(`${row.name} (unit "${String(row.unit)}")`);
+        continue;
+      }
 
       if (matches && matches.length > 0) {
-        const compatible = matches.some((m) => unitsCompatible(m.unit, row.unit ?? null));
+        const compatible = matches.some((m) => unitsCompatible(m.unit, unit));
         if (compatible) {
           // Already on the active list. Left exactly as it is - its quantity and
           // its purchased state are the user's current intent and must not be
@@ -359,7 +447,7 @@ export const copyGroceryListItems = async (
           continue;
         }
         // Same name, incompatible unit. Not copied, and not hidden either.
-        unitConflicts.push(`${row.name}${row.quantity != null ? ` (${row.quantity}${row.unit ? ` ${row.unit}` : ""})` : ""}`);
+        unitConflicts.push(`${row.name}${row.quantity != null ? ` (${row.quantity}${unit ? ` ${unit}` : ""})` : ""}`);
         continue;
       }
 
@@ -367,15 +455,21 @@ export const copyGroceryListItems = async (
         grocery_list_id: toListId,
         name: row.name,
         quantity: row.quantity,
-        unit: row.unit,
+        unit,
         // Always starts unbought, so the copied list can actually be shopped.
         completed: false,
         notes: row.notes
       });
     }
 
+    if (unsupportedUnits.length > 0) {
+      // Surfaced rather than swallowed. This is data the user cannot recover by
+      // retrying, so hiding it would be the worse failure of the two.
+      reportUnsupportedUnits(unsupportedUnits);
+    }
+
     if (toInsert.length === 0) {
-      return { added: 0, alreadyPresent, unitConflicts, fromListId, toListId };
+      return { added: 0, alreadyPresent, unitConflicts, unsupportedUnits, fromListId, toListId };
     }
 
     // One multi-row INSERT, which is atomic: either the whole copy lands or none
@@ -383,10 +477,36 @@ export const copyGroceryListItems = async (
     const { error } = await db().from("grocery_items").insert(toInsert);
     if (error) throw toDataError(error, "Could not copy those items.");
 
-    return { added: toInsert.length, alreadyPresent, unitConflicts, fromListId, toListId };
+    return {
+      added: toInsert.length,
+      alreadyPresent,
+      unitConflicts,
+      unsupportedUnits,
+      fromListId,
+      toListId
+    };
   } finally {
     copiesInFlight.delete(lockKey);
   }
+};
+
+/**
+ * Reports historical rows whose unit is not a supported enum value.
+ *
+ * Intentionally a console warning rather than a thrown error or a user-facing
+ * banner. It cannot fail the copy - the affected items were already excluded
+ * before the insert - and the alternative would be to abort a working copy over
+ * one malformed legacy row. The console keeps the information available for
+ * support and for anyone investigating old data, and `CopyGroceryResult` carries
+ * the same list so a caller can surface it if it wants to.
+ */
+const reportUnsupportedUnits = (items: string[]): void => {
+  const shown = items.slice(0, 5).join(", ");
+  const more = items.length > 5 ? ` and ${items.length - 5} more` : "";
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[grocery history] skipped ${items.length} item(s) with an unsupported unit: ${shown}${more}`
+  );
 };
 
 /** One-line summary of a copy, so the UI never has to reconstruct the counts. */
@@ -404,6 +524,16 @@ export const describeCopyResult = (result: CopyGroceryResult): string => {
     const shown = result.unitConflicts.slice(0, 3).join(", ");
     const more = result.unitConflicts.length > 3 ? ` and ${result.unitConflicts.length - 3} more` : "";
     parts.push(`skipped ${result.unitConflicts.length} in a different unit (${shown}${more})`);
+  }
+  if (result.unsupportedUnits.length > 0) {
+    // Reported to the user, not just logged. An item that could not be copied is
+    // something they need to know about, and saying nothing would imply the whole
+    // list came across.
+    const shown = result.unsupportedUnits.slice(0, 2).join(", ");
+    const more = result.unsupportedUnits.length > 2 ? ` and ${result.unsupportedUnits.length - 2} more` : "";
+    parts.push(
+      `could not copy ${result.unsupportedUnits.length} item(s) with an unrecognised unit (${shown}${more})`
+    );
   }
   return `${parts.join(", ")}.`;
 };

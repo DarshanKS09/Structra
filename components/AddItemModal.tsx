@@ -6,6 +6,7 @@ import {
   fromDateTimeInputValue,
   validateStudyDuration
 } from "@/lib/data/adapters";
+import { normaliseGroceryUnit } from "@/lib/data/groceries";
 import {
   REMINDER_OPTIONS,
   REMINDER,
@@ -55,7 +56,19 @@ const toDraft = <M extends ListMode>(mode: M, form: FormState): DraftByMode[M] =
       return {
         itemName: String(form.itemName || ""),
         quantity: Number(form.quantity || 0),
-        unit: form.unit as "kg" | "g" | "pieces" | "liters",
+        /*
+         * `normaliseGroceryUnit` rather than a bare `as` cast.
+         *
+         * The cast asserted that the value was already one of the four enum
+         * members without checking, which is exactly the assumption that lets an
+         * unsupported unit reach the database and fail a whole batch insert with
+         * `invalid input value for enum grocery_unit`. The normaliser narrows the
+         * same `string` to the same union, but it VERIFIES rather than asserts,
+         * and it falls back to "pieces" - the default the rest of the grocery
+         * model already uses - so a bad value degrades to a sensible unit instead
+         * of an exception at save time.
+         */
+        unit: normaliseGroceryUnit(form.unit) ?? "pieces",
         purchased: Boolean(form.purchased)
       } as DraftByMode[M];
     case "habit":

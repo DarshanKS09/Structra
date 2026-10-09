@@ -1,4 +1,4 @@
-import type { GroceryItemRow, HabitRow, NoteRow, RecordRow, StudySessionRow, StudySubjectRow, TaskRow } from "@/lib/data/types";
+import type { GroceryItemRow, GroceryUnit, HabitRow, NoteRow, RecordRow, StudySessionRow, StudySubjectRow, TaskRow } from "@/lib/data/types";
 import { computeStreak, todayKey } from "@/lib/data/habits";
 import { readDataField } from "@/lib/data/records";
 import type {
@@ -321,7 +321,7 @@ export type ModeDrafts = {
     priority: "low" | "medium" | "high";
     due_at: string | null;
   };
-  grocery: (item: GroceryItem) => { name: string; quantity: number | null; unit: "kg" | "g" | "pieces" | "liters" | null };
+  grocery: (item: GroceryItem) => { name: string; quantity: number | null; unit: GroceryUnit | null };
   habit: (item: HabitItem) => { name: string; frequency: "daily" | "weekly" };
   study: (item: StudyItem) => { topic: string; subject: string; durationMinutes: number };
   fitness: (item: FitnessItem) => Record<string, unknown>;

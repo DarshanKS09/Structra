@@ -1,3 +1,5 @@
+import type { Database } from "@/lib/supabase/types";
+
 export type ListMode =
   | "task"
   | "grocery"
@@ -8,6 +10,25 @@ export type ListMode =
   | "meeting";
 
 export type PriorityLevel = "Low" | "Medium" | "High";
+
+/*
+ * The UI union's grocery unit, derived from the DATABASE enum rather than
+ * restated as a literal union.
+ *
+ * It used to be spelled out inline as `"kg" | "g" | "pieces" | "liters"` in two
+ * places. That is a hand-maintained duplicate of a generated type, which is how
+ * the copy function's `unit: string | null` drifted out of sync with the schema
+ * and broke the production build. Deriving it means adding a unit to the enum in
+ * one migration propagates here automatically, and there is no second copy to
+ * forget.
+ *
+ * `GroceryItem.unit` is deliberately NON-nullable while the column is nullable:
+ * the UI always presents a unit (a row with no unit reads as "pieces" via
+ * `groceryRowToItem`). That conversion is the one place the two representations
+ * meet, so the difference stays visible instead of being smeared across every
+ * call site.
+ */
+export type GroceryUnitName = Database["public"]["Enums"]["grocery_unit"];
 
 interface ItemBase {
   id: string;
@@ -48,7 +69,8 @@ export interface GroceryItem extends ItemBase {
   mode: "grocery";
   itemName: string;
   quantity: number;
-  unit: "kg" | "g" | "pieces" | "liters";
+  /** Derived from the `grocery_unit` enum; see `GroceryUnitName`. */
+  unit: GroceryUnitName;
   purchased: boolean;
 }
 
